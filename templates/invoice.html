@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Devis</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="header">
+        <div class="company-info">
+            <h1>{{ numero_devis }}</h1>
+            <p>Date : {{ date_emission }}</p>
+        </div>
+        <div class="client-info">
+            <h3>Facturé à :</h3>
+            <p>{{ client.nom }}</p>
+            <p>{{ client.adresse }}</p>
+        </div>
+    </div>
+
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th>Description</th>
+                <th>Quantité</th>
+                <th>Prix Unitaire</th>
+                <th>Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ligne in lignes %}
+            <tr>
+                <td>{{ ligne.description }}</td>
+                <td>{{ ligne.quantite }}</td>
+                <td>{{ ligne.prix_unitaire }} €</td>
+                <td>{{ ligne.total_ligne }} €</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="totals">
+        <p>Total HT : {{ total_ht }} €</p>
+        <p>TVA : {{ tva }} €</p>
+        <p class="total-ttc">Total TTC : {{ total_ttc }} €</p>
+    </div>
+
+    <div class="footer">
+        <p>Merci de votre confiance.</p>
+    </div>
+</body>
+</html>

@@ -1,0 +1,73 @@
+@page {
+    size: A4;
+    margin: 2cm;
+}
+
+body {
+    font-family: 'Helvetica', 'Arial', sans-serif;
+    color: #333;
+    line-height: 1.5;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 50px;
+    border-bottom: 2px solid #0056b3; /* Modern Blue */
+    padding-bottom: 20px;
+}
+
+.company-info h1 {
+    color: #0056b3;
+    margin: 0;
+}
+
+.client-info h3 {
+    margin-top: 0;
+    color: #555;
+}
+
+.items-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 30px;
+}
+
+.items-table th {
+    background-color: #f0f8ff; /* AliceBlue */
+    color: #0056b3;
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+.items-table td {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.totals {
+    text-align: right;
+    margin-top: 20px;
+}
+
+.totals p {
+    margin: 5px 0;
+}
+
+.total-ttc {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: #0056b3;
+}
+
+.footer {
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    text-align: center;
+    font-size: 0.8em;
+    color: #777;
+    border-top: 1px solid #eee;
+    padding-top: 10px;
+}

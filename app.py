@@ -1,0 +1,956 @@
+import streamlit as st
+from fpdf import FPDF
+import mock_data
+import io
+import json
+import re 
+import pdfplumber
+import db # Supabase Module
+
+
+
+
+# --- Moteur de Template (FPDF) ---
+class PDF(FPDF):
+    def __init__(self, color, logo_path=None, company_info=None):
+        super().__init__()
+        self.primary_color = color # Tuple (R, G, B)
+        self.logo_path = logo_path
+        self.company_info = company_info or {}
+        self.printing_items = True # Flag: True = Print Table Header, False = Don't (for Totals pages)
+
+    def format_currency(self, value):
+        # Format: 1 234.56 € (with dot decimal as user requested previously, usually comma in FR)
+        # User request: "2340.00 devient 2 340.00"
+        return f"{value:,.2f}".replace(",", " ") + " €"
+        
+    def header(self):
+        # Only show branding on Page 1
+        if self.page_no() == 1:
+            # Couleur Dynamique
+            self.set_fill_color(*self.primary_color)
+            # self.rect(0, 0, 210, 20, 'F') # REMOVED BANNER
+            
+            # Logo (si présent)
+            if self.logo_path:
+                try:
+                    # Increased Y (margin top) from 2 to 10
+                    # Increased Height (size) from 16 to 22
+                    self.image(self.logo_path, x=10, y=10, h=22)
+                except Exception:
+                    pass
+            
+            # Infos Émetteur (Nom + Adresse sous le logo)
+            # On descend le texte pour ne pas chevaucher le logo agrandi
+            # Y=35 (Logo ends at 10+22=32)
+            self.set_y(35)
+            self.set_x(10)
+            self.set_font('Arial', 'B', 10)
+            self.set_text_color(50) # Gris foncé
+            
+            if self.company_info.get('name'):
+                self.cell(0, 5, self.company_info['name'], ln=True)
+                
+            self.set_font('Arial', size=9)
+            self.set_text_color(80) 
+            if self.company_info.get('address'):
+                 self.multi_cell(60, 4, self.company_info['address'])
+                 
+        # --- TABLE HEADER REPEATER ---
+        # Draw the table header on every page
+        # Y position depends on Page 1 or others
+        
+        if self.page_no() == 1:
+            y_header = 75
+        else:
+            y_header = 10 # Top margin for continuation pages
+            
+        # CONDITIONAL HEADER: Only show table columns if we are printing items
+        if self.printing_items:
+            self.set_y(y_header)
+            
+            # Primary Color BG, White Text, Bold
+            r, g, b = self.primary_color
+            self.set_fill_color(r, g, b)
+            self.set_text_color(255, 255, 255)
+            self.set_font("Arial", "B", 9)
+            
+            # Header AVEC fill
+            self.cell(10, 8, "N°", "B", 0, 'C', True)
+            self.cell(85, 8, "DÉSIGNATION", "B", 0, 'L', True)
+            self.cell(25, 8, "QTÉ", "B", 0, 'C', True)
+            self.cell(25, 8, "P.U HT", "B", 0, 'R', True)
+            self.cell(15, 8, "TVA", "B", 0, 'C', True)
+            self.cell(30, 8, "TOTAL HT", "B", 1, 'R', True)
+            
+            self.ln(8) # Move cursor down after header
+        
+            self.ln(8) # Move cursor down after header
+        
+        # Reset colors
+        self.set_text_color(0)
+        self.set_fill_color(0)
+        
+        # --- LOGO HANDLING (Remote vs Local) ---
+        # Note: self.image() normally handles URLs if libcurl is present,
+        # otherwise we might need to download it. For now, we assume local path OR valid URL.
+
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.set_text_color(128)
+        self.cell(0, 10, "Généré par Rapido'devis", 0, 0, 'C')
+
+
+# --------------------------------------------------------------------------------
+# Helper: Tint Color
+# --------------------------------------------------------------------------------
+def get_tint(r, g, b, factor):
+    """Returns a lighter shade of the color. Factor 0-1 (1 is white)."""
+    return (
+        int(r + (255 - r) * factor),
+        int(g + (255 - g) * factor),
+        int(b + (255 - b) * factor)
+    )
+
+def generate_pdf(data, config):
+    # Parsing de la couleur hex -> RGB
+    hex_color = config.get('color', '#0056b3').lstrip('#')
+    r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    logo_path = config.get('logo_path')
+    
+    # Infos émetteur
+    company_info = {
+        "name": config.get('company_name', ""),
+        "address": config.get('company_address', "")
+    }
+
+    pdf = PDF(color=(r, g, b), logo_path=logo_path, company_info=company_info)
+    # Fontes
+    pdf.add_font("Arial", style="", fname="fonts/Arial.ttf")
+    pdf.add_font("Arial", style="B", fname="fonts/Arial-Bold.ttf")
+    pdf.add_font("Arial", style="I", fname="fonts/Arial.ttf") 
+    
+    pdf.add_page()
+    
+    # --- En-tête (Layout Fixe mais Data Dynamique) ---
+    pdf.set_font("Arial", "B", 16)
+    pdf.set_text_color(*(r, g, b)) 
+    # Position absolue pour ESTIMATION/DEVIS
+    pdf.set_xy(140, 10)
+    pdf.cell(60, 8, "ESTIMATION", align='R')
+    
+    pdf.set_font("Arial", size=10)
+    pdf.set_text_color(0)
+    
+    # Numéro
+    pdf.set_xy(140, 17)
+    pdf.cell(60, 5, f"N° {data['numero_devis']}", align='R')
+    
+    # Date
+    pdf.set_xy(140, 22)
+    pdf.cell(60, 5, f"En date du {data['date_emission']}", align='R')
+    
+    # Adresse Client (Position spécifique)
+    # Adresse Client (Position spécifique)
+    # Cadre Adresse: X=105, Y=30, W=95, H=40 (approx, ajuster selon contenu si besoin)
+    pdf.set_draw_color(0)
+    pdf.rect(105, 30, 95, 40)
+    
+    # Positionnement Contenu (Marge interne X=108, Y=33)
+    pdf.set_xy(108, 33)
+    
+    # Nom Client (Réduit à 11 Bold)
+    pdf.set_font("Arial", "B", 11)
+    pdf.cell(90, 6, data['client']['nom'], ln=True)
+    
+    # Adresse
+    pdf.set_font("Arial", size=10) # Réduit à 10
+    pdf.set_text_color(100, 116, 139) # Grayish
+    
+    addr_lines = data['client']['adresse'].split('\n')
+    is_chantier = False
+    
+    for line in addr_lines:
+        line = line.strip()
+        if not line: continue
+        
+        pdf.set_x(108) # Reset X inside box
+        
+        if "Adresse du chantier" in line:
+            is_chantier = True
+            pdf.ln(1) # Petit espace avant section chantier
+            pdf.set_x(108)
+            pdf.set_font("Arial", "B", 9)
+            pdf.set_text_color(0) # Black
+            pdf.cell(90, 5, line, ln=True)
+            
+            pdf.set_font("Arial", size=9)
+            pdf.set_text_color(100, 116, 139) 
+        else:
+            if is_chantier:
+                 pdf.set_font("Arial", size=9)
+            else:
+                 pdf.set_font("Arial", size=10)
+                 
+            pdf.set_text_color(100, 116, 139)
+            # Use MultiCell to ensure wrapping inside 90mm width
+            pdf.multi_cell(89, 4, line)
+            
+    pdf.set_text_color(0) # Reset black
+    
+    pdf.set_y(85) # Ensure start Y (below header line 75 + 8 height + margin)
+    
+    # Pre-calc Tints
+    tint_lvl1 = get_tint(r, g, b, 0.85) # Base Categories (1, 2, 3...) -> Darker
+    tint_lvl2 = get_tint(r, g, b, 0.95) # Sub Categories (1.1, 1.2...) -> Lighter
+    
+    # --- Content Loop ---
+    pdf.set_text_color(0)
+    
+    content = data.get('content', [])
+    
+    for item in content:
+        # SECTION (Titre)
+        if item['type'] == 'section':
+             # Detect nesting level by counting dots in the first word (numbering)
+             # "1" -> 0 dots -> Level 1
+             # "1.1" -> 1 dot -> Level 2
+             
+             first_word = item['text'].split(' ')[0]
+             dots = first_word.count('.')
+             
+             if dots == 0:
+                 # Main Category (darker)
+                 pdf.set_fill_color(*tint_lvl1)
+             else:
+                 # Sub Category (lighter)
+                 pdf.set_fill_color(*tint_lvl2)
+             
+             pdf.ln(2) # Petit espace
+             pdf.set_font("Arial", "B", 10)
+             pdf.set_text_color(0) # Black Text as requested
+             # pdf.set_text_color(*(r, g, b)) # Old Branding color
+             
+             # Cell with Fill
+             pdf.cell(0, 8, item['text'], ln=True, fill=True)
+             
+             pdf.set_text_color(0)
+
+        # ITEM (Ligne article)
+        elif item['type'] == 'item':
+            d = item['data']
+            
+            # 1. Ligne Principale (Titre article + Chiffres)
+            pdf.set_font("Arial", size=9) 
+            
+            # Position Y courante
+            y_start = pdf.get_y()
+            
+            # Detect Text-Only Item (No price)
+            is_text_only = (d['total_ligne'] == 0.0 and d['prix_unitaire'] == 0.0)
+            
+            # Split Number / Description if possible
+            # Regex: Start with digit.digit... then space then rest
+            match_num = re.match(r"^(\d+(?:\.\d+)*)\s+(.*)", d['description'])
+            if match_num:
+                num_text = match_num.group(1)
+                desc_text = match_num.group(2)
+            else:
+                num_text = ""
+                desc_text = d['description']
+
+            # -- ITEMS: NO COLOR (Level 3+) --
+            # "X.Y.Z exemple 1.2.3 alors la rien aucune couleur"
+            do_fill = False
+            
+            if is_text_only:
+                # Affichage Pleine Largeur mais avec colonne N° respectée
+                pdf.set_x(10)
+                
+                # Colonne N°
+                pdf.cell(10, 5, num_text, 0, 0, 'C', do_fill)
+                
+                # Le reste en MultiCell 
+                full_text = desc_text
+                
+                # Use MultiCell
+                pdf.multi_cell(180, 5, full_text, fill=do_fill)
+                
+            else:
+                # Titre Article (Normal)
+                pdf.set_x(10)
+                
+                # Colonne N°
+                pdf.cell(10, 6, num_text, 0, 0, 'C', do_fill)
+                
+                # Largeur description 85
+                pdf.cell(85, 6, desc_text, 0, 0, 'L', do_fill)
+            
+            # Chiffres (seulement si pas text-only)
+            # Quantité avec Unité si dispo
+            q_display = ""
+            if not is_text_only:
+                val_q = d.get('quantite', 0)
+                # Format smart: 6.0 -> "6", 6.5 -> "6.5"
+                try:
+                    vf = float(val_q)
+                    if vf.is_integer():
+                        q_str = str(int(vf))
+                    else:
+                        q_str = str(vf)
+                except:
+                    q_str = str(val_q)
+                
+                q_display = q_str
+                if d.get('unite'):
+                    q_display = f"{q_display} {d['unite']}"
+                
+            pdf.cell(25, 6, q_display, 0, 0, 'C', do_fill)
+            
+            # P.U Formatted
+            pu_str = ""
+            if not is_text_only:
+                pu_str = pdf.format_currency(d['prix_unitaire'])
+            pdf.cell(25, 6, pu_str, 0, 0, 'R', do_fill)
+            
+            # TVA (Nouvelle colonne)
+            tva_disp = ""
+            if not is_text_only:
+                tva_disp = f"{d.get('tva_rate', 0):g}%"
+            pdf.cell(15, 6, tva_disp, 0, 0, 'C', do_fill)
+            
+            # Total Formatted
+            tot_str = ""
+            if not is_text_only:
+                tot_str = pdf.format_currency(d['total_ligne'])
+            pdf.cell(30, 6, tot_str, 0, 1, 'R', do_fill)
+            
+            # 2. Détails (Indented Description)
+            # Only print separately if NOT text-only (since text-only already included it in full_text)
+            if not is_text_only and d.get('details'):
+                pdf.set_font("Arial", size=8) 
+                pdf.set_text_color(80) 
+                
+                # Indentation (X=20) (10 marge + 10 col N°)
+                # Et on aligne sous la description
+                pdf.set_x(20) 
+                # Largeur max details = 85 (col desc width)
+                pdf.multi_cell(85, 4, d['details'], fill=do_fill)
+                
+                pdf.set_text_color(0) 
+            
+            # --- SEPARATOR LINE ---
+            # Après chaque item (standard ou text-only), on tire un trait gris fin
+            y_sep = pdf.get_y() + 1
+            pdf.set_draw_color(220, 220, 220) # Light Gray
+            pdf.line(10, y_sep, 200, y_sep)
+            pdf.set_draw_color(0) # Reset Black
+            pdf.set_y(y_sep + 1) # Move down slightly 
+            pdf.ln(2)
+
+    # --- Totaux ---
+    pdf.ln(5)
+    
+    # IMPORTANT: On arrête d'afficher l'en-tête (colonnes) pour la suite (Totaux)
+    # Cela garantit que si on change de page ici, la nouvelle page sera blanche (sans tableau)
+    pdf.printing_items = False
+    
+    # Check Space for Disclaimer + Totals (~50-60mm needed)
+    # If not enough space, jump to new page immediately to keep block together
+    if pdf.get_y() > 220:
+        pdf.add_page()
+    
+    # Ligne séparation
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(2)
+    
+    # Save Y position
+    y_totals_start = pdf.get_y()
+    
+    # --- Disclaimer (Left) ---
+    pdf.set_xy(10, y_totals_start)
+    pdf.set_font("Arial", size=8)
+    pdf.set_text_color(100, 116, 139) # Gray
+    disclaimer = ("Ce document est une estimation et non un devis.\n"
+                  "Ce document est généré automatiquement par un algorithme intelligent et "
+                  "constitue une estimation indicative. Les montants indiqués sont susceptibles "
+                  "d'être ajouté en cas de modification du taux de TVA en vigueur. Cette estimation "
+                  "devra être confirmée par un artisan qualifié, qui établira un devis définitif prenant "
+                  "en compte les spécificités de votre projet.")
+    pdf.multi_cell(110, 3.5, disclaimer)
+    
+    # --- Totals (Right) ---
+    pdf.set_y(y_totals_start)    
+    # --- New Styled Totals Block ---
+    pdf.ln(5)
+    
+    # Align Right for the text block
+    # Total net HT
+    pdf.set_font("Arial", size=10)
+    pdf.set_text_color(0)
+    pdf.cell(150, 6, "Total net HT", 0, 0, 'R')
+    pdf.cell(40, 6, f"{data['total_ht']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
+    
+    # TVA
+    # Calculate avg rate for display if data available, else 20% default text
+    pdf.cell(150, 6, "TVA (20.0%)", 0, 0, 'R')
+    pdf.cell(40, 6, f"{data['tva']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
+    
+    # Total TTC
+    pdf.cell(150, 6, "Total TTC", 0, 0, 'R')
+    pdf.cell(40, 6, f"{data['total_ttc']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
+    
+    pdf.ln(4)
+    
+    # --- "Net à payer" Banner ---
+    # Green/Primary Color Background
+    pdf.set_fill_color(*(r, g, b))
+    # White Text
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", "B", 14)
+    
+    # Draw Background Rect manually or use Cell with Fill
+    # We want it full width (190mm) or partial right aligned? 
+    # User image shows Full Width or Wide Block. Let's make it full width standard.
+    
+    # Using Cell with Fill
+    # Label "Net à payer" Left aligned inside the block? Or visual spread?
+    # User image: "Net à payer" (Left part of green bar) .... "29 408,40 €" (Right part)
+    
+    y_banner = pdf.get_y()
+    pdf.rect(10, y_banner, 190, 12, 'F') # The green bar
+    
+    # Text inside
+    pdf.set_xy(15, y_banner + 2) # Padding left
+    pdf.cell(90, 8, "Net à payer", 0, 0, 'L')
+    
+    pdf.set_xy(105, y_banner + 2)
+    pdf.cell(90, 8, f"{data['total_ttc']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
+    
+    # Reset
+    pdf.set_text_color(0)
+    pdf.ln(15)
+    
+    return bytes(pdf.output())
+
+# --- Moteur d'Extraction (Layout-Aware V2 Robust) ---
+def extract_data_from_pdf(uploaded_file, api_key=None):
+    import pdfplumber
+    import re
+
+    # Regex utilitaires
+    # Numéro : D202512-1030
+    re_num = re.compile(r"(ESTIMATION|DEVIS)\s+N°\s+([A-Z0-9-]+)")
+    # Relaxed regex: No '^', optional degree sign variations, but STRICT format for ID
+    re_num_standalone = re.compile(r"N[°o\.]?\s*([A-Z]\d{6}-\d+)")
+    re_date = re.compile(r"(\d{2}/\d{2}/\d{4})")
+    
+    # Stratégie de fin de ligne : Total €
+    # Ex: "4 440,00 €" -> On veut éviter de manger le chiffre d'avant (ex "20 % 4 440")
+    # Relaxed: Allow varied whitespace (space, NBSP), optional comma/dot
+    # Regex structure: (Group 1: Value) followed by euro
+    re_total_end = re.compile(r"(\d{1,3}(?:[\s\u00a0\u202f]?\d{3})*[.,]\d{2})\s*€$")
+    
+    # Stratégie Rate : 20.0 % (inchangé mais plus souple sur l'espace)
+    re_rate = re.compile(r"(\d+(?:[\s.,]\d+)?)\s*%")
+    
+    # Stratégie PU : 18,50 €
+    # Similaire à Total mais pas forcément en fin de ligne
+    re_pu = re.compile(r"(\d{1,3}(?:[\s\u00a0\u202f]?\d{3})*[.,]\d{2})\s*€")
+
+    data = {
+        "numero_devis": "INCONNU",
+        "date_emission": "Non trouvée",
+        "client": {"nom": "", "adresse": ""},
+        "content": [],
+        "total_ht": 0.0,
+        "tva": 0.0,
+        "total_ttc": 0.0
+    }
+
+    content_nodes = [] 
+
+    with pdfplumber.open(uploaded_file) as pdf:
+        for page_idx, page in enumerate(pdf.pages):
+            words = page.extract_words(keep_blank_chars=True, x_tolerance=3, y_tolerance=3, extra_attrs=["size"])
+            
+            # Définition du seuil Header selon la page
+            # Page 1 : On ignore les 260 premiers pixels (Logo, Adresse...)
+            # Page 2+ : On ignore juste le tout début (marge, titre répété) -> ex 50
+            header_threshold = 260 if page_idx == 0 else 50
+            
+            lines = {}
+            for w in words:
+                y = round(w['top'])
+                if y not in lines: lines[y] = []
+                lines[y].append(w)
+            
+            sorted_ys = sorted(lines.keys())
+            
+            # --- SMART SEPARATION LOGIC ---
+            # Pre-process lines to handle lines where Left Column (ignored) and Right Column (Client) are on same Y
+            processed_lines = []
+            for y in sorted_ys:
+                # Sort by X just in case
+                raw_words = sorted(lines[y], key=lambda w: w['x0'])
+                if not raw_words: continue
+                
+                # Split Logic
+                current_sub_line = [raw_words[0]]
+                for i in range(1, len(raw_words)):
+                    w = raw_words[i]
+                    prev_w = raw_words[i-1]
+                    # Check Gap > 50px (Grand Canyon)
+                    if (w['x0'] - prev_w['x1']) > 50:
+                        processed_lines.append({'y': y, 'words': current_sub_line})
+                        current_sub_line = [w]
+                    else:
+                        current_sub_line.append(w)
+                processed_lines.append({'y': y, 'words': current_sub_line})
+
+            # Process the Split Lines
+            for p_line in processed_lines:
+                y = p_line['y']
+                line_words = p_line['words']
+                if not line_words: continue
+                
+                text_line = " ".join([w['text'] for w in line_words]).strip()
+                print(f"DEBUG PDF LINE ({y}): '{text_line}'")
+                
+                # --- FILTRAGE HEADER/FOOTER ---
+                # On ignore les lignes contenant ces mots-clés (infos société, pagination)
+                IGNORE_KEYWORDS = ["SASU au capital", "SIRET", "APE :", "N° TVA", "Page", "RAPIDO DEVIS", "Total TTC", "Total net HT", "TVA ("]
+                if any(k in text_line for k in IGNORE_KEYWORDS):
+                    continue
+                
+                # Exclusion par Regex du Numéro de document (ex: D202512-1026) s'il traîne
+                if re.search(r"D\d{6}-\d+", text_line):
+                    continue
+                
+                # NOUVEAU: Filtrage Bas de page / Mentions légales
+                FOOTER_KEYWORDS = ["Offre valable jusqu'au", "Bon pour accord", "Fait le :", "Signature", "À :"]
+                if any(k in text_line for k in FOOTER_KEYWORDS):
+                     continue
+                
+                # Exclusion stricte du Footer par position Y (ex: Numéro document D2025-XX en bas à droite)
+                # Page A4 ~ 842 points. On coupe tout ce qui est en bas (> 800)
+                if y > 800:
+                    continue
+                
+                x_start = line_words[0]['x0']
+                
+                # --- METADATA (Header detection) ---
+                # On ne cherche des métadonnées (Numéro, Client) QUE si on est dans la zone header
+                if y < header_threshold:
+                    # Numéro
+                    m_num = re_num.search(text_line)
+                    if m_num: 
+                        data['numero_devis'] = m_num.group(2)
+                    else:
+                        m_num_alone = re_num_standalone.search(text_line)
+                        if m_num_alone:
+                             print(f"DEBUG MATCH NUM ALONE: {m_num_alone.group(1)} in '{text_line}'")
+                             data['numero_devis'] = m_num_alone.group(1)
+                    
+                    if "Date" in text_line or "du" in text_line:
+                        m_date = re_date.search(text_line)
+                        if m_date: data['date_emission'] = m_date.group(1)
+                        
+                    # Tentative Client (M. Machin ou Société) sur la droite
+                    # X > 250
+                    if x_start > 250:
+                         # Ignore dates/metadata keywords
+                        # Ex: "M. Eric WEISS"
+                        if "Date" not in text_line and "date" not in text_line and "DEVIS" not in text_line and "ESTIMATION" not in text_line and "N°" not in text_line and "Page" not in text_line:
+                            
+                            # NEW: Exclude Table Headers and Totals contamination
+                            if any(k in text_line for k in ["QTÉ", "P.U", "TVA", "Total", "TOTAL"]):
+                                continue
+
+                            # Si le nom est vide, c'est la première ligne du bloc -> NOM
+                            if not data['client']['nom']:
+                                data['client']['nom'] = text_line
+                            else:
+                                # Sinon c'est l'adresse
+                                if len(text_line) > 5:
+                                    if not data['client']['adresse']:
+                                        data['client']['adresse'] = text_line
+                                    else:
+                                        data['client']['adresse'] += "\n" + text_line
+                    
+                    # IMPORTANT : On ne parse PAS de structure (Items/Sections) dans le header
+                    continue
+                
+                # --- STRUCTURE (Body Y >= 260) ---
+                
+                # ... (Reste du parsing Items) ...
+                
+                # 1. Detection Ligne Article (Prix à la fin)
+                m_total = re_total_end.search(text_line)
+                if m_total:
+                    # C'est une ligne de prix !
+                    total_txt = m_total.group(1)
+                    total_val = float(total_txt.replace(' ', '').replace(',', '.'))
+                    
+                    # On retire le Total de la ligne pour chercher le reste
+                    remains = text_line[:m_total.start()].strip()
+                    
+                    # Cherche Taux %
+                    tva_rate = 0.0
+                    m_rate = re_rate.search(remains)
+                    if m_rate:
+                        tva_rate = float(m_rate.group(1).replace(' ','').replace(',', '.'))
+                        # On retire le Taux
+                        remains = remains[:m_rate.start()].strip()
+                        
+                        # Cherche PU €
+                        pus = list(re_pu.finditer(remains))
+                        if pus:
+                            m_pu = pus[-1]
+                            pu_txt = m_pu.group(1)
+                            pu_val = float(pu_txt.replace(' ', '').replace(',', '.'))
+                            
+                            # On retire le PU
+                            remains = remains[:m_pu.start()].strip()
+                            
+                            # Extraction Quantité + Unité (sur la fin de 'remains')
+                            # Ex: "1.1.1 Desc... 240 m2" -> tokens: [..., '240', 'm2']
+                            tokens = remains.split()
+                            quantite = 1.0
+                            unite = ""
+                            desc_end_index = len(tokens)
+                            
+                            if len(tokens) > 0:
+                                last = tokens[-1].replace(',', '.')
+                                try:
+                                    # Cas 1: Fin = Nombre "240"
+                                    quantite = float(last)
+                                    desc_end_index = len(tokens) - 1
+                                except:
+                                    # Cas 2: Fin = Unité "m2"
+                                    # Si le dernier token n'est pas un nombre, c'est peut-être une unité
+                                    if len(tokens) > 1:
+                                        unite = tokens[-1] # "m2"
+                                        second_last = tokens[-2].replace(',', '.')
+                                        try:
+                                            quantite = float(second_last)
+                                            # On a trouvé "Nombre Unité"
+                                            desc_end_index = len(tokens) - 2
+                                        except:
+                                            pass
+                            
+                            # Description = tout ce qui reste
+                            description = " ".join(tokens[:desc_end_index])
+                            # description = re.sub(r"^\d+(\.\d+)*\s+", "", description)
+                            
+                            item_data = {
+                                "description": description,
+                                "quantite": quantite,
+                                "unite": unite, # Nouveau champ
+                                "prix_unitaire": pu_val,
+                                "tva_rate": tva_rate, # Nouveau champ
+                                "total_ligne": total_val,
+                                "details": ""
+                            }
+                            content_nodes.append({'type': 'item', 'data': item_data})
+                            continue
+
+                # 2. Section (Titre) vs Text-Only Item
+                # STRATEGIE ROBUSTE : Si ça commence par un numéro, c'est une structure (Section ou Item Text-Only).
+                # On ne regarde plus l'indentation (x_start) qui est trompeuse.
+                
+                # Ex: "2.1 - Cloisons..."
+                match_structure = re.match(r"^(\d+(?:\.\d+)*)\s+.*", text_line)
+                is_valid_structure = False
+                
+                if match_structure and not m_total:
+                     num_s = match_structure.group(1)
+                     dots = num_s.count('.')
+                     
+                     if dots >= 2:
+                         # Item Text Only (1.2.3) -> Toujours valide comme structure
+                         is_valid_structure = True
+                     else:
+                         # Section (Level 0 ou 1) -> "1 - Titre" ou "1.1 - Titre"
+                         # RISQUE : "19 poteaux" dans une description indentée
+                         # SOLUTION : On exige soit un tiret de séparation, soit une indentation faible (Header)
+                         has_hyphen = re.search(r"\s+[-–]\s+", text_line)
+                         is_left_aligned = (x_start < 50)
+                         
+                         if has_hyphen or is_left_aligned:
+                             is_valid_structure = True
+                
+                if is_valid_structure:
+                     # C'est soit une SECTION (Header) soit un ITEM TEXT-ONLY (3.3.3)
+                     # Distinction ? Souvent Section = "X" ou "X.Y", Item = "X.Y.Z"
+                     # L'utilisateur veut: 1.2.3 -> item text only (pas de couleur de fond).
+                     
+                     num_s = match_structure.group(1)
+                     dots = num_s.count('.')
+                     
+                     # Si c'est profond (2 points ou plus -> 1.1.1), on traite comme Item Text-Only
+                     if dots >= 2:
+                         item_data = {
+                            "description": text_line,
+                            "quantite": "",
+                            "unite": "",
+                            "prix_unitaire": 0.0,
+                            "tva_rate": 0.0,
+                            "total_ligne": 0.0,
+                            "details": ""
+                         }
+                         content_nodes.append({'type': 'item', 'data': item_data})
+                     else:
+                         # Sinon (0 ou 1 point -> 1 ou 1.1), c'est une Section (Titre coloré)
+                         content_nodes.append({'type': 'section', 'text': text_line})
+                     continue
+
+                # 3. Détails (Texte indenté)
+                if x_start > 55 and not m_total:
+                     if content_nodes and content_nodes[-1]['type'] == 'item':
+                         prev = content_nodes[-1]['data']
+                         
+                         # LOGIQUE SPECIALE : Si l'item précédent est un "Text-Only" (Total=0),
+                         # on considère que la suite est la CONTINUATION de la description
+                         # et non pas un détail technique à part.
+                         is_text_only = (prev['total_ligne'] == 0 and not prev['quantite'])
+                         
+                         if is_text_only:
+                             prev['description'] += " " + text_line
+                         else:
+                             if prev['details']:
+                                 prev['details'] += " " + text_line
+                             else:
+                                 prev['details'] = text_line
+                         continue
+
+    # 3. Totaux & TVA
+    # On scanne les dernières lignes pour trouver les totaux
+    # Format analysé : "TVA (20.0%) 4 901,40 €"
+    # "Total TTC 29 408,40 €"
+    
+    # On va chercher dans les textes extraits précédemment ou refaire un passage sur la fin
+    # Le plus simple est de regexer sur le contenu texte global ou ligne par ligne
+    
+    # Regex robustes
+    re_tva_line = re.compile(r"TVA\s*\((\d+(?:[\.,]\d+)?)%\)\s+(\d+(?:[\s]\d+)*,\d{2})\s+€")
+    re_ttc_line = re.compile(r"Total TTC\s+(\d+(?:[\s]\d+)*,\d{2})\s+€")
+    # Pour le HT, souvent non explicite ou calculé. On va essayer de le trouver ou le recalculer.
+    re_ht_line = re.compile(r"Total (?:net )?HT\s+(\d+(?:[\s]\d+)*,\d{2})\s+€")
+
+    # On utilise 'text_content' accumulé si possible, ou on relit.
+    # Ici on va relire tout le texte pour assurer le coup sur les totaux qui peuvent être n'importe où (fin de page)
+    full_text = ""
+    with pdfplumber.open(uploaded_file) as pdf:
+        for p in pdf.pages: full_text += p.extract_text() + "\n"
+        
+    # FALLBACK EXTRACTION NUMERO
+    # Si inconnu ou trop court (ex: juste "D"), on tente le fallback
+    if data['numero_devis'] == "INCONNU" or len(data['numero_devis']) < 5:
+        print("DEBUG: Triggering fallback for Numero")
+        # Regex sur le format DYYYYMM-XXXX (Lettre + 6 chiffres + tiret + chiffres)
+        m_fallback = re.search(r"\b([A-Z]\d{6}-\d+)\b", full_text)
+        if m_fallback:
+            data['numero_devis'] = m_fallback.group(1)
+
+    m_tva = re_tva_line.search(full_text)
+    if m_tva:
+         # On pourrait extraire le taux aussi m_tva.group(1)
+         data['tva'] = float(m_tva.group(2).replace(' ', '').replace(',', '.'))
+         
+    m_ttc = re_ttc_line.search(full_text)
+    if m_ttc:
+        data['total_ttc'] = float(m_ttc.group(1).replace(' ', '').replace(',', '.'))
+        
+    m_ht = re_ht_line.search(full_text)
+    if m_ht:
+        data['total_ht'] = float(m_ht.group(1).replace(' ', '').replace(',', '.'))
+    elif data['total_ttc'] and data['tva']:
+        # Fallback calculé
+        data['total_ht'] = data['total_ttc'] - data['tva']
+
+    data['content'] = content_nodes
+    return data
+
+
+def main():
+    st.set_page_config(page_title="AutoQuote", page_icon="📄", layout="wide")
+    st.title("📄 AutoQuote : Transformateur de Devis")
+    
+    # --- TABS ---
+    tab_gen, tab_templ = st.tabs(["🚀 Générateur", "🎨 Gestion des Templates"])
+    
+    # ==========================
+    # TAB 2: GESTION TEMPLATES
+    # ==========================
+    with tab_templ:
+        st.header("Créer un nouveau modèle de marque")
+        
+        with st.form("new_template"):
+            c1, c2 = st.columns(2)
+            with c1:
+                t_name = st.text_input("Nom du Modèle (ex: Ma Filiale Sud)")
+                t_comp_name = st.text_input("Nom de l'Entreprise (ex: Rapido Sud)")
+                t_address = st.text_area("Adresse Postale")
+            with c2:
+                t_color = st.color_picker("Couleur Principale", "#0056b3")
+                t_logo = st.file_uploader("Logo (Image)", type=['png', 'jpg'])
+            
+            submitted = st.form_submit_button("Enregistrer le Modèle")
+            if submitted:
+                if not t_name:
+                    st.error("Le nom du modèle est obligatoire.")
+                else:
+                    # Upload logo if exists
+                    logo_url = None
+                    if t_logo:
+                        with st.spinner("Upload du logo..."):
+                            logo_url = db.upload_logo(t_logo, t_logo.name)
+                            if not logo_url:
+                                st.warning("Echec de l'upload d'image, le modèle sera sans logo.")
+                    
+                    # Save DB
+                    res = db.create_template(t_name, t_comp_name, t_address, t_color, logo_url)
+                    if res:
+                        st.success("Modèle créé avec succès !")
+                        st.rerun() # Refresh list
+                        
+        st.divider()
+        st.subheader("Modèles existants")
+        templates = db.get_templates()
+        if templates:
+            for t in templates:
+                with st.expander(f"📌 {t['name']} ({t['company_name']})"):
+                    st.write(f"**Adresse**: {t['company_address']}")
+                    st.color_picker("Couleur", t['primary_color'], disabled=True, key=f"c_{t['id']}")
+                    if t['logo_url']:
+                        st.image(t['logo_url'], width=100)
+        else:
+            st.info("Aucun modèle pour l'instant.")
+
+    # ==========================
+    # TAB 1: GÉNÉRATEUR (Main)
+    # ==========================
+    with tab_gen:
+
+        # --- SIDEBAR CONFIG ---
+        with st.sidebar:
+            st.header("⚙️ Configuration")
+            
+            # Template Selector
+            templates = db.get_templates()
+            options = ["Mode Manuel"] + [t['name'] for t in templates]
+            choice = st.selectbox("Choisir une identité visuelle", options)
+            
+            config = {}
+            
+            if choice == "Mode Manuel":
+                st.subheader("🎨 Personnalisation Manuelle")
+                primary_color = st.color_picker("Couleur Principale", "#0056b3")
+                
+                uploaded_logo = st.file_uploader("Logo Entreprise", type=["png", "jpg", "jpeg"])
+                logo_path = None
+                if uploaded_logo:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_logo.name.split('.')[-1]}") as tmp:
+                        tmp.write(uploaded_logo.getvalue())
+                        logo_path = tmp.name
+                    st.image(uploaded_logo, width=100)
+                    
+                company_name = st.text_input("Nom de l'entreprise", "RAPIDO DEVIS")
+                company_address = st.text_area("Adresse Postale", "29 Rue du Père Gwenael\n29470 Plougastel Daoulas")
+                
+                config = {
+                    "color": primary_color,
+                    "logo_path": logo_path,
+                    "company_name": company_name,
+                    "company_address": company_address
+                }
+            else:
+                # Automatic Mode
+                selected_t = next((t for t in templates if t['name'] == choice), None)
+                if selected_t:
+                    st.success(f"Modèle chargé : {selected_t['name']}")
+                    if selected_t['logo_url']:
+                        st.image(selected_t['logo_url'], width=100)
+                    st.write(f"**{selected_t['company_name']}**")
+                    
+                    config = {
+                        "color": selected_t['primary_color'],
+                        "logo_path": selected_t['logo_url'], # URL works with compatible FPDF or we download it
+                        "company_name": selected_t['company_name'],
+                        "company_address": selected_t['company_address']
+                    }
+
+        st.subheader("1. Importation du Devis Fournisseur")
+        uploaded_file = st.file_uploader("Déposer un devis (PDF)", type="pdf")
+    
+        if uploaded_file:
+            st.success(f"Fichier reçu : {uploaded_file.name}")
+            
+            if st.button("🚀 Lancer l'Extraction"):
+                with st.spinner("🔍 Analyse du PDF en cours..."):
+                    try:
+                        # Extraction
+                        extracted_data = extract_data_from_pdf(uploaded_file)
+                        # Store in session state
+                        st.session_state['extracted_data'] = extracted_data
+                        st.session_state['extraction_done'] = True
+                        
+                    except Exception as e:
+                        st.error(f"Une erreur est survenue : {e}")
+    
+            # --- DISPLAY LOGIC (PERSISTENT) ---
+            if st.session_state.get('extraction_done') and 'extracted_data' in st.session_state:
+                
+                extracted_data = st.session_state['extracted_data']
+                
+                with st.expander("Voir les données extraites (JSON)"):
+                    st.json(extracted_data)
+            
+            # --- JSON EDITOR ---
+            st.subheader("📝 Édition des Données (JSON)")
+            
+            # Convert to JSON str
+            json_val = json.dumps(extracted_data, indent=4, ensure_ascii=False)
+            edited_json = st.text_area("Modifiez les données ci-dessous :", value=json_val, height=500)
+            
+            if st.button("🚀 Générer le PDF (depuis JSON édité)"):
+                try:
+                     # Parse edited JSON
+                     final_data = json.loads(edited_json)
+                     st.session_state['extracted_data'] = final_data # Update state
+                     
+                     pdf_bytes = generate_pdf(final_data, config)
+                     
+                     st.success("✅ PDF Généré avec succès !")
+                     st.download_button(
+                         label="⬇️ Télécharger le Devis Standardisé",
+                         data=pdf_bytes,
+                         file_name=f"autoquote_{final_data.get('numero_devis', 'new')}.pdf",
+                         mime="application/pdf"
+                     )
+                except json.JSONDecodeError:
+                     st.error("❌ Erreur de syntaxe dans le JSON. Vérifiez les virgules et guillemets.")
+                except Exception as e:
+                     st.error(f"Erreur lors de la génération : {e}")
+
+    st.divider()
+    st.subheader("2. Test Manuel (Sans IA)")
+    if st.button("Générer un PDF de test (Mock Data)"):
+        try:
+            pdf_data = generate_pdf(mock_data.MOCK_DATA, config)
+            st.success("PDF généré avec succès !")
+            st.download_button(
+                label="⬇️ Télécharger le Devis Test",
+                data=pdf_data,
+                file_name="devis_test.pdf",
+                mime="application/pdf"
+            )
+        except Exception as e:
+            st.error(f"Erreur lors de la génération : {e}")
+
+if __name__ == "__main__":
+    main()
