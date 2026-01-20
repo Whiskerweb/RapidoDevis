@@ -8,8 +8,6 @@ import pdfplumber
 import db # Supabase Module
 
 
-
-
 # --- Moteur de Template (FPDF) ---
 class PDF(FPDF):
     def __init__(self, color, logo_path=None, company_info=None):
@@ -517,7 +515,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 if not line_words: continue
                 
                 text_line = " ".join([w['text'] for w in line_words]).strip()
-                print(f"DEBUG PDF LINE ({y}): '{text_line}'")
+                # print(f"DEBUG PDF LINE ({y}): '{text_line}'")
                 
                 # --- FILTRAGE HEADER/FOOTER ---
                 # On ignore les lignes contenant ces mots-clés (infos société, pagination)
@@ -551,7 +549,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                     else:
                         m_num_alone = re_num_standalone.search(text_line)
                         if m_num_alone:
-                             print(f"DEBUG MATCH NUM ALONE: {m_num_alone.group(1)} in '{text_line}'")
+                             # print(f"DEBUG MATCH NUM ALONE: {m_num_alone.group(1)} in '{text_line}'")
                              data['numero_devis'] = m_num_alone.group(1)
                     
                     if "Date" in text_line or "du" in text_line:
@@ -776,181 +774,208 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
 
 
 def main():
-    st.set_page_config(page_title="AutoQuote", page_icon="📄", layout="wide")
-    st.title("📄 AutoQuote : Transformateur de Devis")
+    st.set_page_config(page_title="Rapido'Devis", page_icon="🚀", layout="wide")
     
-    # --- TABS ---
-    tab_gen, tab_templ = st.tabs(["🚀 Générateur", "🎨 Gestion des Templates"])
-    
-    # ==========================
-    # TAB 2: GESTION TEMPLATES
-    # ==========================
-    with tab_templ:
-        st.header("Créer un nouveau modèle de marque")
+    # --- CSS IMPROVEMENTS ---
+    st.markdown("""
+        <style>
+        .stButton button {
+            width: 100%;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .step-container {
+            background-color: #f0f2f6;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- SESSION STATE NAV ---
+    if 'step' not in st.session_state:
+        st.session_state['step'] = 'home'
+    if 'selected_template' not in st.session_state:
+        st.session_state['selected_template'] = None
+    if 'extracted_data' not in st.session_state:
+        st.session_state['extracted_data'] = None
+
+    # =========================================================
+    # VIEW: HOME (TEMPLATE MANAGEMENT)
+    # =========================================================
+    if st.session_state['step'] == 'home':
+        st.title("🎨 Rapido'Devis - Dashboard")
         
-        with st.form("new_template"):
-            c1, c2 = st.columns(2)
-            with c1:
-                t_name = st.text_input("Nom du Modèle (ex: Ma Filiale Sud)")
-                t_comp_name = st.text_input("Nom de l'Entreprise (ex: Rapido Sud)")
-                t_address = st.text_area("Adresse Postale")
-            with c2:
-                t_color = st.color_picker("Couleur Principale", "#0056b3")
-                t_logo = st.file_uploader("Logo (Image)", type=['png', 'jpg'])
-            
-            submitted = st.form_submit_button("Enregistrer le Modèle")
-            if submitted:
-                if not t_name:
-                    st.error("Le nom du modèle est obligatoire.")
-                else:
-                    # Upload logo if exists
-                    logo_url = None
-                    if t_logo:
-                        with st.spinner("Upload du logo..."):
-                            logo_url = db.upload_logo(t_logo, t_logo.name)
-                            if not logo_url:
-                                st.warning("Echec de l'upload d'image, le modèle sera sans logo.")
-                    
-                    # Save DB
-                    res = db.create_template(t_name, t_comp_name, t_address, t_color, logo_url)
-                    if res:
-                        st.success("Modèle créé avec succès !")
-                        st.rerun() # Refresh list
-                        
+        # --- ACTION BAR ---
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            st.info("Bienvenue ! Configurez vos identités visuelles (Templates) ci-dessous, ou lancez un nouveau devis.")
+        with c2:
+            if st.button("🚀 NOUVEAU DEVIS", type="primary", use_container_width=True):
+                st.session_state['step'] = 'select_template'
+                st.rerun()
+
         st.divider()
-        st.subheader("Modèles existants")
+
+        # --- TEMPLATE MANAGER ---
+        st.subheader("Mes Templates")
+        
+        # 1. LIST EXISTING
         templates = db.get_templates()
         if templates:
-            for t in templates:
-                with st.expander(f"📌 {t['name']} ({t['company_name']})"):
-                    st.write(f"**Adresse**: {t['company_address']}")
-                    st.color_picker("Couleur", t['primary_color'], disabled=True, key=f"c_{t['id']}")
-                    if t['logo_url']:
-                        st.image(t['logo_url'], width=100)
-        else:
-            st.info("Aucun modèle pour l'instant.")
-
-    # ==========================
-    # TAB 1: GÉNÉRATEUR (Main)
-    # ==========================
-    with tab_gen:
-
-        # --- SIDEBAR CONFIG ---
-        with st.sidebar:
-            st.header("⚙️ Configuration")
-            
-            # Template Selector
-            templates = db.get_templates()
-            options = ["Mode Manuel"] + [t['name'] for t in templates]
-            choice = st.selectbox("Choisir une identité visuelle", options)
-            
-            config = {}
-            
-            if choice == "Mode Manuel":
-                st.subheader("🎨 Personnalisation Manuelle")
-                primary_color = st.color_picker("Couleur Principale", "#0056b3")
-                
-                uploaded_logo = st.file_uploader("Logo Entreprise", type=["png", "jpg", "jpeg"])
-                logo_path = None
-                if uploaded_logo:
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_logo.name.split('.')[-1]}") as tmp:
-                        tmp.write(uploaded_logo.getvalue())
-                        logo_path = tmp.name
-                    st.image(uploaded_logo, width=100)
-                    
-                company_name = st.text_input("Nom de l'entreprise", "RAPIDO DEVIS")
-                company_address = st.text_area("Adresse Postale", "29 Rue du Père Gwenael\n29470 Plougastel Daoulas")
-                
-                config = {
-                    "color": primary_color,
-                    "logo_path": logo_path,
-                    "company_name": company_name,
-                    "company_address": company_address
-                }
-            else:
-                # Automatic Mode
-                selected_t = next((t for t in templates if t['name'] == choice), None)
-                if selected_t:
-                    st.success(f"Modèle chargé : {selected_t['name']}")
-                    if selected_t['logo_url']:
-                        st.image(selected_t['logo_url'], width=100)
-                    st.write(f"**{selected_t['company_name']}**")
-                    
-                    config = {
-                        "color": selected_t['primary_color'],
-                        "logo_path": selected_t['logo_url'], # URL works with compatible FPDF or we download it
-                        "company_name": selected_t['company_name'],
-                        "company_address": selected_t['company_address']
-                    }
-
-        st.subheader("1. Importation du Devis Fournisseur")
-        uploaded_file = st.file_uploader("Déposer un devis (PDF)", type="pdf")
-    
-        if uploaded_file:
-            st.success(f"Fichier reçu : {uploaded_file.name}")
-            
-            if st.button("🚀 Lancer l'Extraction"):
-                with st.spinner("🔍 Analyse du PDF en cours..."):
-                    try:
-                        # Extraction
-                        extracted_data = extract_data_from_pdf(uploaded_file)
-                        # Store in session state
-                        st.session_state['extracted_data'] = extracted_data
-                        st.session_state['extraction_done'] = True
+            cols = st.columns(3)
+            for i, t in enumerate(templates):
+                with cols[i % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"### {t['name']}")
+                        st.caption(t['company_name'])
+                        if t['logo_url']:
+                            st.image(t['logo_url'], height=50)
+                        else:
+                            st.text("Pas de logo")
+                        st.color_picker("Couleur", t['primary_color'], disabled=True, key=f"c_view_{t['id']}")
                         
-                    except Exception as e:
-                        st.error(f"Une erreur est survenue : {e}")
-    
-            # --- DISPLAY LOGIC (PERSISTENT) ---
-            if st.session_state.get('extraction_done') and 'extracted_data' in st.session_state:
-                
-                extracted_data = st.session_state['extracted_data']
-                
-                with st.expander("Voir les données extraites (JSON)"):
-                    st.json(extracted_data)
-            
-            # --- JSON EDITOR ---
-            st.subheader("📝 Édition des Données (JSON)")
-            
-            # Convert to JSON str
-            json_val = json.dumps(extracted_data, indent=4, ensure_ascii=False)
-            edited_json = st.text_area("Modifiez les données ci-dessous :", value=json_val, height=500)
-            
-            if st.button("🚀 Générer le PDF (depuis JSON édité)"):
-                try:
-                     # Parse edited JSON
-                     final_data = json.loads(edited_json)
-                     st.session_state['extracted_data'] = final_data # Update state
-                     
-                     pdf_bytes = generate_pdf(final_data, config)
-                     
-                     st.success("✅ PDF Généré avec succès !")
-                     st.download_button(
-                         label="⬇️ Télécharger le Devis Standardisé",
-                         data=pdf_bytes,
-                         file_name=f"autoquote_{final_data.get('numero_devis', 'new')}.pdf",
-                         mime="application/pdf"
-                     )
-                except json.JSONDecodeError:
-                     st.error("❌ Erreur de syntaxe dans le JSON. Vérifiez les virgules et guillemets.")
-                except Exception as e:
-                     st.error(f"Erreur lors de la génération : {e}")
+        else:
+            st.warning("Aucun template configuré. Créez-en un pour commencer !")
 
-    st.divider()
-    st.subheader("2. Test Manuel (Sans IA)")
-    if st.button("Générer un PDF de test (Mock Data)"):
-        try:
-            pdf_data = generate_pdf(mock_data.MOCK_DATA, config)
-            st.success("PDF généré avec succès !")
-            st.download_button(
-                label="⬇️ Télécharger le Devis Test",
-                data=pdf_data,
-                file_name="devis_test.pdf",
-                mime="application/pdf"
-            )
-        except Exception as e:
-            st.error(f"Erreur lors de la génération : {e}")
+        st.divider()
+        
+        # 2. CREATE NEW
+        with st.expander("➕ Ajouter un nouveau Template", expanded=False):
+            with st.form("new_template"):
+                st.write("Configuration de l'identité visuelle")
+                c1, c2 = st.columns(2)
+                with c1:
+                    t_name = st.text_input("Nom du Template (ex: Rapido Sud)")
+                    t_comp_name = st.text_input("Nom Société (ex: Rapido Construction)")
+                    t_address_in = st.text_area("Adresse Postale")
+                with c2:
+                    t_color = st.color_picker("Couleur", "#0056b3")
+                    t_logo = st.file_uploader("Logo", type=['png', 'jpg'])
+                
+                if st.form_submit_button("Enregistrer"):
+                    if not t_name:
+                        st.error("Nom obligatoire")
+                    else:
+                        logo_url = None
+                        if t_logo:
+                            logo_url = db.upload_logo(t_logo, t_logo.name)
+                        
+                        if db.create_template(t_name, t_comp_name, t_address_in, t_color, logo_url):
+                            st.success("Template créé !")
+                            st.rerun()
+
+    # =========================================================
+    # VIEW: STEP 1 - SELECT TEMPLATE
+    # =========================================================
+    elif st.session_state['step'] == 'select_template':
+        st.button("⬅️ Retour", on_click=lambda: st.session_state.update({'step': 'home'}))
+        st.title("1️⃣ Choisissez l'identité visuelle")
+        
+        templates = db.get_templates()
+        if not templates:
+            st.error("Aucun template trouvé. Veuillez en créer un d'abord.")
+            if st.button("Créer un template"):
+                st.session_state['step'] = 'home'
+                st.rerun()
+        else:
+            # Card selection feel using radio or selectbox
+            t_names = [t['name'] for t in templates]
+            choice = st.selectbox("Sélectionnez le template à utiliser pour ce devis :", t_names)
+            
+            # Show preview
+            sel_t = next(t for t in templates if t['name'] == choice)
+            
+            with st.container(border=True):
+                c1, c2 = st.columns([1, 4])
+                with c1:
+                    if sel_t['logo_url']:
+                        st.image(sel_t['logo_url'], width=100)
+                with c2:
+                    st.subheader(sel_t['company_name'])
+                    st.write(sel_t['company_address'])
+                    st.color_picker("Couleur", sel_t['primary_color'], disabled=True, key="preview_col")
+            
+            if st.button("Valider et Continuer ➡️", type="primary"):
+                st.session_state['selected_template'] = sel_t
+                st.session_state['step'] = 'upload_pdf'
+                st.rerun()
+
+    # =========================================================
+    # VIEW: STEP 2 - UPLOAD & EXTRACT
+    # =========================================================
+    elif st.session_state['step'] == 'upload_pdf':
+        st.button("⬅️ Changer de template", on_click=lambda: st.session_state.update({'step': 'select_template'}))
+        st.title("2️⃣ Importation du Devis Fournisseur")
+        
+        uploaded_file = st.file_uploader("Déposez votre PDF ici", type="pdf")
+        
+        if uploaded_file:
+            if st.button("Lancer l'Analyse 🔍", type="primary"):
+                with st.spinner("Extraction des données en cours..."):
+                    try:
+                        data = extract_data_from_pdf(uploaded_file)
+                        st.session_state['extracted_data'] = data
+                        st.session_state['step'] = 'preview'
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur d'extraction : {e}")
+
+    # =========================================================
+    # VIEW: STEP 3 - PREVIEW & DOWNLOAD
+    # =========================================================
+    elif st.session_state['step'] == 'preview':
+        st.button("⬅️ Recommencer", on_click=lambda: st.session_state.update({'step': 'upload_pdf'}))
+        st.title("3️⃣ Validation & Téléchargement")
+        
+        data = st.session_state['extracted_data']
+        template = st.session_state['selected_template']
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.success("✅ Données extraites avec succès")
+            with st.expander("Voir les données JSON brutes"):
+                st.json(data)
+            
+            # JSON Editor
+            st.subheader("📝 Modifier les données")
+            json_str = json.dumps(data, indent=4, ensure_ascii=False)
+            json_edited = st.text_area("Éditeur JSON", value=json_str, height=300)
+        
+        with c2:
+            st.info(f"Modèle actif : **{template['name']}**")
+            
+            # GENERATION PDF
+            if st.button("Générer le PDF Final 📄", type="primary"):
+                try:
+                    # Parse JSON edited
+                    final_data = json.loads(json_edited)
+                    
+                    # Config object for PDF
+                    config = {
+                        "color": template['primary_color'],
+                        "logo_path": template['logo_url'],
+                        "company_name": template['company_name'],
+                        "company_address": template['company_address']
+                    }
+                    
+                    final_pdf_bytes = generate_pdf(final_data, config)
+                    
+                    st.download_button(
+                        label="⬇️ TÉLÉCHARGER LE DEVIS",
+                        data=final_pdf_bytes,
+                        file_name=f"Devis_{final_data.get('numero_devis', 'New')}.pdf",
+                        mime="application/pdf",
+                        type="primary"
+                    )
+                    st.balloons()
+                    
+                except json.JSONDecodeError:
+                    st.error("Erreur de format JSON")
+                except Exception as e:
+                    st.error(f"Erreur de génération PDF : {e}")
 
 if __name__ == "__main__":
     main()
