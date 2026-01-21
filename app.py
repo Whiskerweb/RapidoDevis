@@ -855,7 +855,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
     # --- EXTRACTION ROBUSTE DES TOTAUX (SEQUENCE-BASED) ---
     # Pour gérer les décalages de lignes entre labels (ex: Total net HT sur 2 lignes) et valeurs
     
-    label_re = re.compile(r"(Total|net|HT|TVA|TTC)", re.IGNORE_CASE)
+    label_re = re.compile(r"(Total|net|HT|TVA|TTC)", re.IGNORECASE)
     tva_rate_re = re.compile(r"(\d+(?:[\.,]\d+)?)%")
     value_re = re.compile(r"(\d+(?:[\s]\d+)*,\d{2})\s+€")
     
