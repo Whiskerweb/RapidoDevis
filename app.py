@@ -945,6 +945,34 @@ def main():
                             st.text("Pas de logo")
                         st.color_picker("Couleur", t['primary_color'], disabled=True, key=f"c_view_{t['id']}")
                         
+                        # --- ACTIONS: EDIT & DELETE ---
+                        c_edit, c_del = st.columns(2)
+                        
+                        with c_edit:
+                            with st.popover("📝 Éditer"):
+                                with st.form(f"edit_form_{t['id']}"):
+                                    st.write(f"Modifier **{t['name']}**")
+                                    e_name = st.text_input("Nom", value=t['name'])
+                                    e_comp = st.text_input("Société", value=t['company_name'])
+                                    e_addr = st.text_area("Adresse", value=t['company_address'])
+                                    e_col = st.color_picker("Couleur", value=t['primary_color'])
+                                    e_logo = st.file_uploader("Modifier Logo (optionnel)", type=['png', 'jpg'], key=f"logo_edit_{t['id']}")
+                                    
+                                    if st.form_submit_button("Sauvegarder Changes"):
+                                        logo_url = t['logo_url']
+                                        if e_logo:
+                                            logo_url = db.upload_logo(e_logo, e_logo.name)
+                                        
+                                        if db.update_template(t['id'], e_name, e_comp, e_addr, e_col, logo_url):
+                                            st.success("Mis à jour !")
+                                            st.rerun()
+                        
+                        with c_del:
+                            if st.button("🗑️ Supprimer", key=f"del_{t['id']}", type="secondary", use_container_width=True):
+                                if db.delete_template(t['id']):
+                                    st.toast(f"Template '{t['name']}' supprimé")
+                                    st.rerun()
+                        
         else:
             st.warning("Aucun template configuré. Créez-en un pour commencer !")
 

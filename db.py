@@ -36,6 +36,33 @@ def create_template(name, company_name, company_address, primary_color, logo_url
         st.error(f"Erreur Création: {e}")
         return None
 
+def update_template(template_id, name, company_name, company_address, primary_color, logo_url=None):
+    """Update an existing template."""
+    supabase = init_supabase()
+    data = {
+        "name": name,
+        "company_name": company_name,
+        "company_address": company_address,
+        "primary_color": primary_color,
+        "logo_url": logo_url
+    }
+    try:
+        response = supabase.table("templates").update(data).eq("id", template_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Mise à jour: {e}")
+        return None
+
+def delete_template(template_id):
+    """Delete a template by ID."""
+    supabase = init_supabase()
+    try:
+        response = supabase.table("templates").delete().eq("id", template_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Suppression: {e}")
+        return None
+
 def upload_logo(file_obj, file_name):
     """Uploads a file to 'logos' bucket and returns Public URL."""
     supabase = init_supabase()
