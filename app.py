@@ -1021,15 +1021,15 @@ def main():
         uploaded_file = st.file_uploader("Déposez votre PDF ici", type="pdf")
         
         if uploaded_file:
-            if st.button("Lancer l'Analyse 🔍", type="primary"):
-                with st.spinner("Extraction des données en cours..."):
-                    try:
-                        data = extract_data_from_pdf(uploaded_file)
-                        st.session_state['extracted_data'] = data
-                        st.session_state['step'] = 'preview'
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erreur d'extraction : {e}")
+            # On lance l'analyse automatiquement dès que le fichier est présent
+            with st.spinner("Analyse automatique en cours..."):
+                try:
+                    data = extract_data_from_pdf(uploaded_file)
+                    st.session_state['extracted_data'] = data
+                    st.session_state['step'] = 'preview'
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur d'extraction : {e}")
 
     # =========================================================
     # VIEW: STEP 3 - PREVIEW & DOWNLOAD
