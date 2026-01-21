@@ -517,19 +517,28 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
             for p_line in processed_lines:
                 y = p_line['y']
                 line_words = p_line['words']
+                # 1. Nettoyage préventif : On vire les mots hors-page (X > 600)
+                # Le texte "fantôme" (ex: d'être ajouté...) est souvent à X=900+ ou 4000+
+                line_words = [w for w in line_words if w['x0'] < 600]
                 if not line_words: continue
                 
                 text_line = " ".join([w['text'] for w in line_words]).strip()
                 
                 # --- CLEANUP (Retrait du texte juridique/footer mélangé) ---
-                # Ex: "3.3.12 Mise en service ... Modalités et conditions de règlement ..."
-                # Ex: "1C eff tdocument est gé5n2é0r.0é0 ..."
+                # On coupe dès qu'on trouve un de ces marqueurs
                 garbage_markers = [
                     "Modalités et conditions de règlement", 
                     "Ce document est généré",
                     "algorithme intelligent",
                     "constitue une estimation",
-                    "1C eff tdocument"
+                    "1C eff tdocument",
+                    "d'être ajouté",
+                    "modification du taux de TVA",
+                    "Code général des impôts",
+                    "Garantie responsabilité civile",
+                    "Cette estimation devra être confirmée",
+                    "TVA à taux réduit",
+                    "En qualité de preneur"
                 ]
                 for marker in garbage_markers:
                     if marker in text_line:
