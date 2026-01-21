@@ -333,7 +333,11 @@ def generate_pdf(data, config):
                 
                 # Indentation (X=20) (10 marge + 10 col N°)
                 # Et on aligne sous la description
-                pdf.set_x(20) 
+                pdf.set_x(20)
+                
+                # [Visual Tweak] Remonter légèrement pour coller au titre (réduire le saut de ligne de cell())
+                pdf.set_y(pdf.get_y() - 3) 
+                
                 # Largeur max details = 85 (col desc width)
                 pdf.multi_cell(85, 4, d['details'], fill=do_fill)
                 
