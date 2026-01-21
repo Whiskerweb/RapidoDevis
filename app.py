@@ -333,10 +333,7 @@ def generate_pdf(data, config):
                 
                 # Indentation (X=20) (10 marge + 10 col N°)
                 # Et on aligne sous la description
-                pdf.set_x(20)
-                
-                # [Visual Tweak] Remonter légèrement pour coller au titre (réduire le saut de ligne de cell())
-                pdf.set_y(pdf.get_y() - 3) 
+                pdf.set_x(20) 
                 
                 # Largeur max details = 85 (col desc width)
                 pdf.multi_cell(85, 4, d['details'], fill=do_fill)
@@ -656,7 +653,42 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                                 "total_ligne": total_val,
                                 "details": ""
                             }
-                            content_nodes.append({'type': 'item', 'data': item_data})
+                            
+                            # MERGE LOGIC: Si l'item précédent est un "Text-Only" (Header 1.1.1),
+                            # et que cet item (qui a un prix) n'a pas de numéro, c'est probablement la suite/détails du header.
+                            # On fusionne pour éviter d'avoir titre SEPARE de description par une ligne.
+                            merged = False
+                            if content_nodes and content_nodes[-1]['type'] == 'item':
+                                prev = content_nodes[-1]['data']
+                                prev_is_text_only = (prev['total_ligne'] == 0.0 and prev['prix_unitaire'] == 0.0 and not prev['quantite'])
+                                
+                                # Condition pour merge:
+                                # 1. Precedent est text-only
+                                # 2. Courant a un prix (déjà validé ici car on est dans le bloc if m_total)
+                                # 3. Courant n'a pas de structure de numéro explicite au début (ex "1.1.2") dans sa description
+                                # (Si courant a "1.1.2 Description", c'est un nouvel item, pas un merge)
+                                current_desc_has_num = re.match(r"^\d+(\.\d+)+", description)
+                                
+                                if prev_is_text_only and not current_desc_has_num:
+                                    # ON FUSIONNE
+                                    # Le titre reste celui du précedent (Header)
+                                    # La description du courant devient des "détails" pour le précédent
+                                    if prev['details']:
+                                        prev['details'] += "\n" + description
+                                    else:
+                                        prev['details'] = description
+                                    
+                                    # On recupere les valeurs chiffrées
+                                    prev['quantite'] = quantite
+                                    prev['unite'] = unite
+                                    prev['prix_unitaire'] = pu_val
+                                    prev['tva_rate'] = tva_rate
+                                    prev['total_ligne'] = total_val
+                                    
+                                    merged = True
+                            
+                            if not merged:
+                                content_nodes.append({'type': 'item', 'data': item_data})
                             continue
 
                 # 2. Section (Titre) vs Text-Only Item
