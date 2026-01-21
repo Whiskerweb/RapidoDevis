@@ -765,6 +765,21 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                                  prev['details'] = text_line
                          continue
 
+                # 4. Fallback: Titre Multi-lignes (Left Aligned but no number)
+                # Ex: "rampants" (suite du titre)
+                # Si on est ici, ce n'est NI un Price, NI une Structure Validée, NI un Détail indenté (>55).
+                # Si c'est aligné à gauche (< 55), c'est probablement la suite du titre de l'item précédent.
+                if x_start < 55:
+                     if content_nodes:
+                         prev_node = content_nodes[-1]
+                         if prev_node['type'] == 'item':
+                             # On ajoute au titre (description)
+                             prev_node['data']['description'] += " " + text_line
+                         elif prev_node['type'] == 'section':
+                             # On ajoute au titre de section
+                             prev_node['text'] += " " + text_line
+                     continue
+
     # 3. Totaux & TVA
     # On scanne les dernières lignes pour trouver les totaux
     # Format analysé : "TVA (20.0%) 4 901,40 €"
