@@ -524,7 +524,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 
                 # --- FILTRAGE HEADER/FOOTER ---
                 # On ignore les lignes contenant ces mots-clés (infos société, pagination)
-                IGNORE_KEYWORDS = ["SASU au capital", "SIRET", "APE :", "N° TVA", "Page", "RAPIDO DEVIS", "Total TTC", "Total net HT", "TVA ("]
+                IGNORE_KEYWORDS = ["SASU au capital", "SIRET", "APE :", "N° TVA", "Page", "RAPIDO DEVIS", "Total TTC", "Total net HT", "TVA (", "DÉSIGNATION", "Code I.B.A.N", "Par prélèvement"]
                 if any(k in text_line for k in IGNORE_KEYWORDS):
                     continue
                 
