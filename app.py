@@ -832,7 +832,7 @@ def main():
                         st.markdown(f"### {t['name']}")
                         st.caption(t['company_name'])
                         if t['logo_url']:
-                            st.image(t['logo_url'], height=50)
+                            st.image(t['logo_url'], width=100)
                         else:
                             st.text("Pas de logo")
                         st.color_picker("Couleur", t['primary_color'], disabled=True, key=f"c_view_{t['id']}")
