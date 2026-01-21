@@ -823,59 +823,129 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                              prev_node['text'] += " " + text_line
                      continue
 
-    # 3. Totaux & TVA
-    # On scanne les dernières lignes pour trouver les totaux
-    # Format analysé : "TVA (20.0%) 4 901,40 €"
-    # "Total TTC 29 408,40 €"
-    
-    # On va chercher dans les textes extraits précédemment ou refaire un passage sur la fin
-    # Le plus simple est de regexer sur le contenu texte global ou ligne par ligne
-    
-    # Regex robustes
-    re_tva_line = re.compile(r"TVA\s*\((\d+(?:[\.,]\d+)?)%\)\s+(\d+(?:[\s]\d+)*,\d{2})\s+€")
-    re_ttc_line = re.compile(r"Total TTC\s+(\d+(?:[\s]\d+)*,\d{2})\s+€")
-    # Pour le HT, souvent non explicite ou calculé. On va essayer de le trouver ou le recalculer.
-    re_ht_line = re.compile(r"Total (?:net )?HT\s+(\d+(?:[\s]\d+)*,\d{2})\s+€")
-
-    # On utilise 'text_content' accumulé si possible, ou on relit.
-    # Ici on va relire tout le texte pour assurer le coup sur les totaux qui peuvent être n'importe où (fin de page)
-    full_text = ""
+    # --- EXTRACTION ROBUSTE DES TOTAUX (Columnar Match) ---
+    # On cible la dernière page pour les totaux
     with pdfplumber.open(uploaded_file) as pdf:
-        for p in pdf.pages: full_text += p.extract_text() + "\n"
+        last_page = pdf.pages[-1]
+        words = last_page.extract_words()
         
-    # FALLBACK EXTRACTION NUMERO
-    # Si inconnu ou trop court (ex: juste "D"), on tente le fallback
-    if data['numero_devis'] == "INCONNU" or len(data['numero_devis']) < 5:
-        print("DEBUG: Triggering fallback for Numero")
-        # Regex sur le format DYYYYMM-XXXX (Lettre + 6 chiffres + tiret + chiffres)
-        m_fallback = re.search(r"\b([A-Z]\d{6}-\d+)\b", full_text)
-        if m_fallback:
-            data['numero_devis'] = m_fallback.group(1)
+        # Filtre de la zone des totaux (bas droite, très serré)
+        # On évite de capturer les derniers items du tableau
+        roi = [w for w in words if w['x0'] > 380 and w['top'] > 460]
+        
+        # Séparation en deux piles : Libellés (gauche) et Valeurs (droite)
+        labels_raw = [w for w in roi if w['x0'] < 500]
+        values_raw = [w for w in roi if w['x0'] >= 500]
+        
+        # Groupement par lignes (tolérance Y=8)
+        def group_into_lines(word_list, tol=8):
+            lines = {}
+            for w in word_list:
+                y = int(w['top'])
+                found = False
+                for ly in lines:
+                    if abs(ly - y) < tol:
+                        lines[ly].append(w)
+                        found = True
+                        break
+                if not found: lines[y] = [w]
+            
+            rows = []
+            for y in sorted(lines.keys()):
+                text = " ".join([w['text'] for w in sorted(lines[y], key=lambda x: x['x0'])])
+                rows.append({"y": y, "text": text})
+            return rows
 
-    # Extraction de toutes les lignes de TVA
-    tva_lines_found = re_tva_line.findall(full_text)
-    data['tva_lines'] = []
-    total_tva_extracted = 0.0
-    
-    for rate_str, amount_str in tva_lines_found:
-        rate = rate_str.strip()
-        amount = float(amount_str.replace(' ', '').replace(',', '.'))
-        data['tva_lines'].append({"rate": rate, "amount": amount})
-        total_tva_extracted += amount
-    
-    # On garde 'tva' pour la compatibilité (somme totale)
-    data['tva'] = total_tva_extracted
-         
-    m_ttc = re_ttc_line.search(full_text)
-    if m_ttc:
-        data['total_ttc'] = float(m_ttc.group(1).replace(' ', '').replace(',', '.'))
+        group_labels = group_into_lines(labels_raw)
+        group_values = group_into_lines(values_raw)
         
-    m_ht = re_ht_line.search(full_text)
-    if m_ht:
-        data['total_ht'] = float(m_ht.group(1).replace(' ', '').replace(',', '.'))
-    elif data['total_ttc'] and data['tva']:
-        # Fallback calculé
-        data['total_ht'] = data['total_ttc'] - data['total_tva_extracted'] if 'total_tva_extracted' in locals() else data['total_ttc'] - data['tva']
+        # --- Fusion sémantique des libellés (ex: "Total net" + "HT") ---
+        merged_labels = []
+        for l in group_labels:
+            txt = l['text'].strip()
+            # Si le libellé est juste "HT" ou "HT" et qu'on a un "Total" juste avant
+            if merged_labels and (txt.lower() == "ht" or txt.lower() == "net") and "total" in merged_labels[-1]['text'].lower():
+                merged_labels[-1]['text'] += " " + txt
+            else:
+                merged_labels.append(l)
+        
+        # --- Extraction des montants des valeurs ---
+        re_money_raw = re.compile(r"(\d+(?:[\s\.]\d+)*,\d{2})")
+        extracted_values = []
+        for v in group_values:
+            m_val = re_money_raw.search(v['text'])
+            if m_val:
+                extracted_values.append({
+                    "y": v['y'],
+                    "amount": float(m_val.group(1).replace(' ', '').replace(',', '.'))
+                })
+
+        # --- Filtrage des labels pertinents ---
+        totals_keywords = ["total", "ht", "tva", "ttc", "net à payer", "net a payer"]
+        interest_labels = [l for l in merged_labels if any(k in l['text'].lower() for k in totals_keywords)]
+        
+        # --- Extraction propre des montants ---
+        re_money_raw = re.compile(r"(\d+(?:[\s\.]\d+)*,\d{2})")
+        clean_values = []
+        for v in group_values:
+            m_val = re_money_raw.search(v['text'])
+            if m_val:
+                clean_values.append({
+                    "y": v['y'],
+                    "amount": float(m_val.group(1).replace(' ', '').replace(',', '.'))
+                })
+
+        # --- Matching --- 
+        final_pairs = []
+        # Si on a le même nombre de labels et de valeurs après filtrage,
+        # l'appariement ordinal est le plus sûr contre les décalages Y
+        if len(interest_labels) == len(clean_values) and len(interest_labels) > 0:
+            for i in range(len(interest_labels)):
+                final_pairs.append({
+                    "label": interest_labels[i]['text'].lower(),
+                    "amount": clean_values[i]['amount']
+                })
+        else:
+            # Fallback Proximité si les listes sont asymétriques
+            for v in clean_values:
+                best_l = None
+                min_dist = 25
+                for l in interest_labels:
+                    dist = abs(l['y'] - v['y'])
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_l = l
+                if best_l:
+                    final_pairs.append({"label": best_l['text'].lower(), "amount": v['amount']})
+
+        # --- Attribution des données ---
+        data['tva_lines'] = []
+        data['tva'] = 0.0
+        
+        for p in final_pairs:
+            lbl = p['label']
+            amt = p['amount']
+            
+            # Priorité TTC si le label contient les deux
+            if "total ttc" in lbl or "net à payer" in lbl or "net a payer" in lbl:
+                data['total_ttc'] = amt
+            elif "tva" in lbl and "total" not in lbl and "ttc" not in lbl and "payer" not in lbl:
+                m_rate = re.search(r"(\d+(?:[\.,]\d+)?)%", lbl)
+                rate_str = m_rate.group(1) if m_rate else "20.0"
+                # Eviter les doublons
+                if not any(x['rate'] == rate_str and x['amount'] == amt for x in data['tva_lines']):
+                    data['tva_lines'].append({"rate": rate_str, "amount": amt})
+                    data['tva'] += amt
+            elif "ht" in lbl:
+                data['total_ht'] = amt
+
+    # Trie les TVA par taux croissant
+    if data.get('tva_lines'):
+        data['tva_lines'].sort(key=lambda x: float(x['rate'].replace(',', '.')))
+
+    # Fallback HT si non trouvé explicitement
+    if not data.get('total_ht') and data.get('total_ttc') and data.get('tva'):
+        data['total_ht'] = data['total_ttc'] - data['tva']
 
     data['content'] = content_nodes
     return data
