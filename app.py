@@ -520,6 +520,23 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 if not line_words: continue
                 
                 text_line = " ".join([w['text'] for w in line_words]).strip()
+                
+                # --- CLEANUP (Retrait du texte juridique/footer mélangé) ---
+                # Ex: "3.3.12 Mise en service ... Modalités et conditions de règlement ..."
+                # Ex: "1C eff tdocument est gé5n2é0r.0é0 ..."
+                garbage_markers = [
+                    "Modalités et conditions de règlement", 
+                    "Ce document est généré",
+                    "algorithme intelligent",
+                    "constitue une estimation",
+                    "1C eff tdocument"
+                ]
+                for marker in garbage_markers:
+                    if marker in text_line:
+                        # On coupe tout ce qui suit le marqueur (y compris le marqueur)
+                        idx = text_line.find(marker)
+                        text_line = text_line[:idx].strip()
+                
                 # print(f"DEBUG PDF LINE ({y}): '{text_line}'")
                 
                 # --- FILTRAGE HEADER/FOOTER ---
