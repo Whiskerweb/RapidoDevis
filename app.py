@@ -519,6 +519,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 line_words = p_line['words']
                 # 1. Nettoyage préventif : On vire les mots hors-page (X > 600)
                 # Le texte "fantôme" (ex: d'être ajouté...) est souvent à X=900+ ou 4000+
+                # UPDATE: Force Reload
                 line_words = [w for w in line_words if w['x0'] < 600]
                 if not line_words: continue
                 
