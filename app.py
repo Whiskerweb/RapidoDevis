@@ -1055,6 +1055,11 @@ def main():
         with c2:
             st.info(f"Modèle actif : **{template['name']}**")
             
+            # NOM DU FICHIER
+            st.subheader("📁 Export")
+            default_filename = f"Estimation_{data.get('numero_devis', 'Inconnu')}"
+            export_name = st.text_input("Nom du fichier (sans .pdf)", value=default_filename)
+            
             # GENERATION PDF
             if st.button("Générer le PDF Final 📄", type="primary"):
                 try:
@@ -1072,9 +1077,9 @@ def main():
                     final_pdf_bytes = generate_pdf(final_data, config)
                     
                     st.download_button(
-                        label="⬇️ TÉLÉCHARGER LE DEVIS",
+                        label="⬇️ TÉLÉCHARGER L'ESTIMATION",
                         data=final_pdf_bytes,
-                        file_name=f"Devis_{final_data.get('numero_devis', 'New')}.pdf",
+                        file_name=f"{export_name}.pdf",
                         mime="application/pdf",
                         type="primary"
                     )
