@@ -392,12 +392,22 @@ def generate_pdf(data, config):
     pdf.cell(150, 6, "Total net HT", 0, 0, 'R')
     pdf.cell(40, 6, f"{data['total_ht']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
     
-    # TVA
-    # Calculate avg rate for display if data available, else 20% default text
-    pdf.cell(150, 6, "TVA (20.0%)", 0, 0, 'R')
-    pdf.cell(40, 6, f"{data['tva']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
+    # TVA Lines
+    # Si on a plusieurs lignes de TVA, on les affiche toutes
+    tva_lines = data.get('tva_lines', [])
+    if not tva_lines and data.get('tva', 0) > 0:
+        # Fallback pour compatibilité si tva_lines n'est pas présent
+        tva_lines = [{"rate": "20.0", "amount": data['tva']}]
+        
+    for tva_item in tva_lines:
+        rate_val = tva_item['rate']
+        amt_val = tva_item['amount']
+        pdf.set_font("Arial", size=10)
+        pdf.cell(150, 6, f"TVA ({rate_val}%)", 0, 0, 'R')
+        pdf.cell(40, 6, f"{amt_val:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
     
     # Total TTC
+    pdf.set_font("Arial", "B", 10)
     pdf.cell(150, 6, "Total TTC", 0, 0, 'R')
     pdf.cell(40, 6, f"{data['total_ttc']:,.2f} €".replace(',', ' ').replace('.', ','), 0, 1, 'R')
     
@@ -848,10 +858,19 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
         if m_fallback:
             data['numero_devis'] = m_fallback.group(1)
 
-    m_tva = re_tva_line.search(full_text)
-    if m_tva:
-         # On pourrait extraire le taux aussi m_tva.group(1)
-         data['tva'] = float(m_tva.group(2).replace(' ', '').replace(',', '.'))
+    # Extraction de toutes les lignes de TVA
+    tva_lines_found = re_tva_line.findall(full_text)
+    data['tva_lines'] = []
+    total_tva_extracted = 0.0
+    
+    for rate_str, amount_str in tva_lines_found:
+        rate = rate_str.strip()
+        amount = float(amount_str.replace(' ', '').replace(',', '.'))
+        data['tva_lines'].append({"rate": rate, "amount": amount})
+        total_tva_extracted += amount
+    
+    # On garde 'tva' pour la compatibilité (somme totale)
+    data['tva'] = total_tva_extracted
          
     m_ttc = re_ttc_line.search(full_text)
     if m_ttc:
@@ -862,7 +881,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
         data['total_ht'] = float(m_ht.group(1).replace(' ', '').replace(',', '.'))
     elif data['total_ttc'] and data['tva']:
         # Fallback calculé
-        data['total_ht'] = data['total_ttc'] - data['tva']
+        data['total_ht'] = data['total_ttc'] - data['total_tva_extracted'] if 'total_tva_extracted' in locals() else data['total_ttc'] - data['tva']
 
     data['content'] = content_nodes
     return data
