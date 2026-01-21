@@ -751,12 +751,16 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                      if content_nodes and content_nodes[-1]['type'] == 'item':
                          prev = content_nodes[-1]['data']
                          
-                         # LOGIQUE SPECIALE : Si l'item précédent est un "Text-Only" (Total=0),
-                         # on considère que la suite est la CONTINUATION de la description
-                         # et non pas un détail technique à part.
-                         is_text_only = (prev['total_ligne'] == 0 and not prev['quantite'])
+                         # LOGIQUE FONT SIZE : Distinguer "Suite du Titre" vs "Détails"
+                         # Titre (9.0) vs Details (7.7)
+                         # Moyenne taille police de la ligne
+                         avg_size = sum(w['size'] for w in line_words) / len(line_words)
+                         is_title_continuation = (avg_size > 8.5)
                          
-                         if is_text_only:
+                         # Cas Spécial : Si l'item précédent est "Text-Only", tout est suite du titre/desc
+                         is_prev_text_only = (prev['total_ligne'] == 0 and not prev['quantite'])
+                         
+                         if is_prev_text_only or is_title_continuation:
                              prev['description'] += " " + text_line
                          else:
                              if prev['details']:
