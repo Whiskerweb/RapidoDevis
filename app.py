@@ -852,111 +852,30 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
         if m_fallback:
             data['numero_devis'] = m_fallback.group(1)
 
-    # --- EXTRACTION ROBUSTE DES TOTAUX (SEQUENCE-BASED) ---
-    # Pour gérer les décalages de lignes entre labels (ex: Total net HT sur 2 lignes) et valeurs
+    # Extraction de toutes les lignes de TVA
+    tva_lines_found = re_tva_line.findall(full_text)
+    data['tva_lines'] = []
+    total_tva_extracted = 0.0
     
-    label_re = re.compile(r"(Total|net|HT|TVA|TTC)", re.IGNORECASE)
-    tva_rate_re = re.compile(r"(\d+(?:[\.,]\d+)?)%")
-    value_re = re.compile(r"(\d+(?:[\s]\d+)*,\d{2})\s+€")
+    for rate_str, amount_str in tva_lines_found:
+        rate = rate_str.strip()
+        amount = float(amount_str.replace(' ', '').replace(',', '.'))
+        data['tva_lines'].append({"rate": rate, "amount": amount})
+        total_tva_extracted += amount
     
-    # On travaille sur la dernière page pour plus de précision sur les totaux
-    with pdfplumber.open(uploaded_file) as pdf:
-        last_page = pdf.pages[-1]
-        footer_words = last_page.extract_words()
-        # On filtre la zone en bas à droite (pousser vers l'extrême droite pour les valeurs)
-        # x0 > 300 pour les labels et valeurs
-        footer_words = [w for w in footer_words if w['x0'] > 300 and w['top'] > 400]
+    # On garde 'tva' pour la compatibilité (somme totale)
+    data['tva'] = total_tva_extracted
+         
+    m_ttc = re_ttc_line.search(full_text)
+    if m_ttc:
+        data['total_ttc'] = float(m_ttc.group(1).replace(' ', '').replace(',', '.'))
         
-        # Groupement par lignes (tolérance 5px)
-        lines = []
-        if footer_words:
-            footer_words.sort(key=lambda x: x['top'])
-            curr_y = footer_words[0]['top']
-            curr_line = [footer_words[0]]
-            for w in footer_words[1:]:
-                if abs(w['top'] - curr_y) < 5:
-                    curr_line.append(w)
-                else:
-                    lines.append(curr_line)
-                    curr_line = [w]
-                    curr_y = w['top']
-            lines.append(curr_line)
-
-        # Analyse des lignes pour séparer Labels et Valeurs
-        raw_labels = []
-        raw_values = []
-        
-        for line_words in lines:
-            line_text = " ".join([w['text'] for w in line_words])
-            
-            # 1. Capture Valeurs (Colonne de droite)
-            m_val = value_re.search(line_text)
-            if m_val:
-                val_float = float(m_val.group(1).replace(' ', '').replace(',', '.'))
-                raw_values.append(val_float)
-            
-            # 2. Capture Labels (Colonne de gauche)
-            # On cherche des mots clés de totaux
-            if label_re.search(line_text):
-                # On nettoie le texte pour ne garder que le label sans la valeur
-                clean_label = value_re.sub("", line_text).strip()
-                if clean_label:
-                    raw_labels.append({
-                        "text": clean_label,
-                        "y": line_words[0]['top']
-                    })
-
-        # Nettoyage et Fusion des Labels
-        # "Total net" + "HT" -> un seul label HT
-        final_labels = []
-        i = 0
-        while i < len(raw_labels):
-            l = raw_labels[i]
-            txt = l['text']
-            
-            # Si c'est "Total net" et la suivante contient "HT", on fusionne
-            if "Total" in txt and "net" in txt and "HT" not in txt and (i+1) < len(raw_labels):
-                next_l = raw_labels[i+1]
-                if "HT" in next_l['text']:
-                    final_labels.append({"type": "HT", "text": "Total net HT"})
-                    i += 2
-                    continue
-            
-            if "HT" in txt:
-                final_labels.append({"type": "HT", "text": "Total HT"})
-            elif "TVA" in txt:
-                # Extraire le taux
-                m_rate = tva_rate_re.search(txt)
-                rate = m_rate.group(1) if m_rate else "20"
-                final_labels.append({"type": "TVA", "rate": rate, "text": f"TVA ({rate}%)"})
-            elif "TTC" in txt:
-                final_labels.append({"type": "TTC", "text": "Total TTC"})
-            
-            i += 1
-
-        # ALIGNEMENT SEQUENTIEL
-        # On a X labels et Y valeurs. On mappe dans l'ordre de la pile.
-        temp_tva_lines = []
-        for idx, lbl in enumerate(final_labels):
-            if idx < len(raw_values):
-                val = raw_values[idx]
-                if lbl['type'] == "HT":
-                    data['total_ht'] = val
-                elif lbl['type'] == "TVA":
-                    temp_tva_lines.append({"rate": lbl['rate'], "amount": val})
-                elif lbl['type'] == "TTC":
-                    data['total_ttc'] = val
-
-        if temp_tva_lines:
-            data['tva_lines'] = temp_tva_lines
-            data['tva'] = sum(li['amount'] for li in temp_tva_lines)
-        
-        # Fallbacks si extraction séquentielle a loupé un truc (ex: HT non explicite)
-        if not data.get('total_ht') and data.get('total_ttc') and data.get('tva'):
-            data['total_ht'] = data['total_ttc'] - data['tva']
-        elif not data.get('total_ttc') and data.get('total_ht') and data.get('tva'):
-            data['total_ttc'] = data['total_ht'] + data['tva']
-
+    m_ht = re_ht_line.search(full_text)
+    if m_ht:
+        data['total_ht'] = float(m_ht.group(1).replace(' ', '').replace(',', '.'))
+    elif data['total_ttc'] and data['tva']:
+        # Fallback calculé
+        data['total_ht'] = data['total_ttc'] - data['total_tva_extracted'] if 'total_tva_extracted' in locals() else data['total_ttc'] - data['tva']
 
     data['content'] = content_nodes
     return data

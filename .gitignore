@@ -10,3 +10,14 @@ __pycache__/
 venv/
 .venv/
 .DS_Store
+# Debugging scripts and logs
+analyze_fonts.py
+analyze_pdf_structure.py
+analyze_word_sizes.py
+debug_regex.py
+reproduce_issue.py
+verify_clean_fix.py
+verify_extraction.py
+test_tva.py
+*.pdf
+*.txt
