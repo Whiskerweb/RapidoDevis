@@ -236,21 +236,43 @@ def generate_pdf(data, config):
              
              pdf.set_text_color(0)
 
-        # ITEM (Ligne article)
+        # ITEM (Article)
         elif item['type'] == 'item':
             d = item['data']
             
-            # 1. Ligne Principale (Titre article + Chiffres)
-            pdf.set_font("Arial", size=9) 
+            # --- CALCUL DE LA HAUTEUR PRÉVISIONNELLE (COHÉSION) ---
+            # On veut éviter que le titre soit sur une page et les détails sur l'autre.
             
-            # Position Y courante
+            # 1. Estimation Title Height
+            pdf.set_font("Arial", size=9)
+            desc_text_clean = d['description']
+            # On simule le split pour connaître le nombre de lignes (Largeur 95 si normal, 180 si text-only)
+            is_text_only = (d['total_ligne'] == 0.0 and d['prix_unitaire'] == 0.0)
+            title_w = 180 if is_text_only else 95 # Col N° (10) + Col Desc (85)
+            
+            # multi_cell(split_only=True) renvoie la liste des lignes
+            title_lines = pdf.multi_cell(title_w, 5, desc_text_clean, split_only=True)
+            title_h = len(title_lines) * 5
+            
+            # 2. Estimation Details Height
+            details_h = 0
+            if not is_text_only and d.get('details'):
+                 pdf.set_font("Arial", size=8)
+                 detail_lines = pdf.multi_cell(85, 4, d['details'], split_only=True)
+                 details_h = len(detail_lines) * 4
+            
+            total_item_h = title_h + details_h + 5 # + marge
+            
+            # 3. Check Page Break
+            # Seuil de sécurité bas de page (marge standard fpdf ~270-280)
+            if pdf.get_y() + total_item_h > 270:
+                pdf.add_page()
+            
+            # --- RENDERING ---
+            pdf.set_font("Arial", size=9) 
             y_start = pdf.get_y()
             
-            # Detect Text-Only Item (No price)
-            is_text_only = (d['total_ligne'] == 0.0 and d['prix_unitaire'] == 0.0)
-            
-            # Split Number / Description if possible
-            # Regex: Start with digit.digit... then space then rest
+            # Split Number / Description if possible for layout
             match_num = re.match(r"^(\d+(?:\.\d+)*)\s+(.*)", d['description'])
             if match_num:
                 num_text = match_num.group(1)
@@ -259,85 +281,57 @@ def generate_pdf(data, config):
                 num_text = ""
                 desc_text = d['description']
 
-            # -- ITEMS: NO COLOR (Level 3+) --
-            # "X.Y.Z exemple 1.2.3 alors la rien aucune couleur"
-            do_fill = False
-            
             if is_text_only:
-                # Affichage Pleine Largeur mais avec colonne N° respectée
                 pdf.set_x(10)
-                
-                # Colonne N°
-                pdf.cell(10, 5, num_text, 0, 0, 'C', do_fill)
-                
-                # Le reste en MultiCell 
-                full_text = desc_text
-                
-                # Use MultiCell
-                pdf.multi_cell(180, 5, full_text, fill=do_fill)
-                
+                pdf.cell(10, 5, num_text, 0, 0, 'C')
+                pdf.multi_cell(180, 5, desc_text)
             else:
-                # Titre Article (Normal)
+                # Titre Article avec support multi-ligne
                 pdf.set_x(10)
+                # Colonne N° (On la garde fixe en haut de l'article)
+                pdf.cell(10, 5, num_text, 0, 0, 'C')
                 
-                # Colonne N°
-                pdf.cell(10, 6, num_text, 0, 0, 'C', do_fill)
+                # Description (Multi-ligne possible)
+                # On sauvegarde le Y pour aligner les colonnes de prix après
+                curr_y = pdf.get_y()
+                pdf.multi_cell(85, 5, desc_text)
+                end_y = pdf.get_y()
                 
-                # Largeur description 85
-                pdf.cell(85, 6, desc_text, 0, 0, 'L', do_fill)
-            
-            # Chiffres (seulement si pas text-only)
-            # Quantité avec Unité si dispo
-            q_display = ""
-            if not is_text_only:
+                # --- Colonnes de Chiffres (Alignées sur la première ligne de l'élément) ---
+                # On remonte au Y initial pour poser les chiffres à droite du titre
+                pdf.set_xy(105, curr_y) # 10 (marge) + 10 (N°) + 85 (Desc)
+                
+                # Quantité
                 val_q = d.get('quantite', 0)
-                # Format smart: 6.0 -> "6", 6.5 -> "6.5"
                 try:
                     vf = float(val_q)
-                    if vf.is_integer():
-                        q_str = str(int(vf))
-                    else:
-                        q_str = str(vf)
+                    q_str = str(int(vf)) if vf.is_integer() else str(vf)
                 except:
                     q_str = str(val_q)
                 
-                q_display = q_str
-                if d.get('unite'):
-                    q_display = f"{q_display} {d['unite']}"
+                q_display = f"{q_str} {d['unite']}" if d.get('unite') else q_str
+                pdf.cell(25, 5, q_display, 0, 0, 'C')
                 
-            pdf.cell(25, 6, q_display, 0, 0, 'C', do_fill)
-            
-            # P.U Formatted
-            pu_str = ""
-            if not is_text_only:
-                pu_str = pdf.format_currency(d['prix_unitaire'])
-            pdf.cell(25, 6, pu_str, 0, 0, 'R', do_fill)
-            
-            # TVA (Nouvelle colonne)
-            tva_disp = ""
-            if not is_text_only:
+                # P.U
+                pdf.cell(25, 5, pdf.format_currency(d['prix_unitaire']), 0, 0, 'R')
+                
+                # TVA
                 tva_disp = f"{d.get('tva_rate', 0):g}%"
-            pdf.cell(15, 6, tva_disp, 0, 0, 'C', do_fill)
-            
-            # Total Formatted
-            tot_str = ""
-            if not is_text_only:
-                tot_str = pdf.format_currency(d['total_ligne'])
-            pdf.cell(30, 6, tot_str, 0, 1, 'R', do_fill)
-            
-            # 2. Détails (Indented Description)
-            # Only print separately if NOT text-only (since text-only already included it in full_text)
+                pdf.cell(15, 5, tva_disp, 0, 0, 'C')
+                
+                # Total
+                pdf.cell(30, 5, pdf.format_currency(d['total_ligne']), 0, 1, 'R')
+                
+                # On se remet au maximum entre la fin de la description et la fin des prix
+                final_y = max(end_y, pdf.get_y())
+                pdf.set_y(final_y)
+
+            # 2. Détails (Texte gris)
             if not is_text_only and d.get('details'):
                 pdf.set_font("Arial", size=8) 
                 pdf.set_text_color(80) 
-                
-                # Indentation (X=20) (10 marge + 10 col N°)
-                # Et on aligne sous la description
                 pdf.set_x(20) 
-                
-                # Largeur max details = 85 (col desc width)
-                pdf.multi_cell(85, 4, d['details'], fill=do_fill)
-                
+                pdf.multi_cell(85, 4, d['details'])
                 pdf.set_text_color(0) 
             
             # --- SEPARATOR LINE ---
