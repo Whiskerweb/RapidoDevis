@@ -497,12 +497,16 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 if not raw_words: continue
                 
                 # Split Logic
+                # RESTRICTION: On n'applique le split 'Grand Canyon' que pour le Header (Address Separation)
+                # Pour le Body (Items), on veut garder la ligne entière (Qté ... Prix ... Total)
+                should_split = (y < header_threshold)
+                
                 current_sub_line = [raw_words[0]]
                 for i in range(1, len(raw_words)):
                     w = raw_words[i]
                     prev_w = raw_words[i-1]
                     # Check Gap > 50px (Grand Canyon)
-                    if (w['x0'] - prev_w['x1']) > 50:
+                    if should_split and (w['x0'] - prev_w['x1']) > 50:
                         processed_lines.append({'y': y, 'words': current_sub_line})
                         current_sub_line = [w]
                     else:
@@ -588,6 +592,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 
                 # 1. Detection Ligne Article (Prix à la fin)
                 m_total = re_total_end.search(text_line)
+                
                 if m_total:
                     # C'est une ligne de prix !
                     total_txt = m_total.group(1)
