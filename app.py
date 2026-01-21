@@ -488,6 +488,10 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
             
             sorted_ys = sorted(lines.keys())
             
+            # STATE: Footer Supression
+            # Dès qu'on détecte le début du bloc légal, on arrête de lire la page
+            footer_detected = False
+            
             # --- SMART SEPARATION LOGIC ---
             # Pre-process lines to handle lines where Left Column (ignored) and Right Column (Client) are on same Y
             processed_lines = []
@@ -525,31 +529,35 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 
                 text_line = " ".join([w['text'] for w in line_words]).strip()
                 
-                # --- CLEANUP (Retrait du texte juridique/footer mélangé) ---
-                # On coupe dès qu'on trouve un de ces marqueurs
-                garbage_markers = [
+                # --- FOOTER DETECTION (Bloc Légal / Fin de page) ---
+                if footer_detected:
+                    continue
+
+                footer_start_markers = [
                     "Modalités et conditions de règlement", 
                     "Ce document est généré",
                     "algorithme intelligent",
                     "constitue une estimation",
-                    "1C eff tdocument",
-                    "d'être ajouté",
-                    "modification du taux de TVA",
-                    "Code général des impôts",
                     "Garantie responsabilité civile",
-                    "Cette estimation devra être confirmée",
-                    "TVA à taux réduit",
-                    "En qualité de preneur"
+                    "En qualité de preneur",
+                    "Conditions de règlement :"
                 ]
-                for marker in garbage_markers:
+                
+                # Check si cette ligne DÉCLENCHE le mode footer
+                for marker in footer_start_markers:
                     if marker in text_line:
-                        # On coupe tout ce qui suit le marqueur (y compris le marqueur)
+                        footer_detected = True
+                        # Si le marqueur est au milieu de la ligne (fusionné avec un item), on coupe avant
                         idx = text_line.find(marker)
-                        text_line = text_line[:idx].strip()
+                        if idx > 5: # S'il y a du texte avant (l'item), on le garde
+                             text_line = text_line[:idx].strip()
+                        else: # Sinon, c'est juste une ligne de footer, on la jette
+                             text_line = ""
+                        break
                 
-                # print(f"DEBUG PDF LINE ({y}): '{text_line}'")
-                
-                # --- FILTRAGE HEADER/FOOTER ---
+                if not text_line: continue
+
+                # --- FILTRAGE HEADER/FOOTER (Classique) ---
                 # On ignore les lignes contenant ces mots-clés (infos société, pagination)
                 IGNORE_KEYWORDS = ["SASU au capital", "SIRET", "APE :", "N° TVA", "Page", "RAPIDO DEVIS", "Total TTC", "Total net HT", "TVA (", "DÉSIGNATION", "Code I.B.A.N", "Par prélèvement", "Code B.I.C", "Ce document est une estimation"]
                 if any(k in text_line for k in IGNORE_KEYWORDS):
