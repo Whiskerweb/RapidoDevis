@@ -10,12 +10,13 @@ import db # Supabase Module
 
 # --- Moteur de Template (FPDF) ---
 class PDF(FPDF):
-    def __init__(self, color, logo_path=None, company_info=None):
+    def __init__(self, color, logo_path=None, company_info=None, show_branding=True):
         super().__init__()
         self.primary_color = color # Tuple (R, G, B)
         self.logo_path = logo_path
         self.company_info = company_info or {}
         self.printing_items = True # Flag: True = Print Table Header, False = Don't (for Totals pages)
+        self.show_branding = show_branding
 
     def format_currency(self, value):
         # Format: 1 234.56 € (with dot decimal as user requested previously, usually comma in FR)
@@ -95,10 +96,11 @@ class PDF(FPDF):
 
 
     def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.set_text_color(128)
-        self.cell(0, 10, "Généré par Rapido'devis", 0, 0, 'C')
+        if self.show_branding:
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.set_text_color(128)
+            self.cell(0, 10, "Généré par Rapido'devis", 0, 0, 'C')
 
 
 # --------------------------------------------------------------------------------
@@ -124,7 +126,12 @@ def generate_pdf(data, config):
         "address": config.get('company_address', "")
     }
 
-    pdf = PDF(color=(r, g, b), logo_path=logo_path, company_info=company_info)
+    pdf = PDF(
+        color=(r, g, b), 
+        logo_path=logo_path, 
+        company_info=company_info,
+        show_branding=config.get('show_branding', True)
+    )
     # Fontes
     pdf.add_font("Arial", style="", fname="fonts/Arial.ttf")
     pdf.add_font("Arial", style="B", fname="fonts/Arial-Bold.ttf")
@@ -1083,6 +1090,10 @@ def main():
         with c2:
             st.info(f"Modèle actif : **{template['name']}**")
             
+            # OPTIONS
+            st.subheader("⚙️ Options")
+            show_br = st.checkbox("Afficher 'Généré par Rapido'devis' sur le PDF", value=True)
+            
             # NOM DU FICHIER
             st.subheader("📁 Export")
             default_filename = f"Estimation_{data.get('numero_devis', 'Inconnu')}"
@@ -1099,7 +1110,8 @@ def main():
                         "color": template['primary_color'],
                         "logo_path": template['logo_url'],
                         "company_name": template['company_name'],
-                        "company_address": template['company_address']
+                        "company_address": template['company_address'],
+                        "show_branding": show_br
                     }
                     
                     final_pdf_bytes = generate_pdf(final_data, config)
