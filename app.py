@@ -1030,7 +1030,33 @@ def main():
         # EMAIL TEMPLATE MANAGEMENT
         # =========================================================
         st.subheader("📧 Templates d'Email")
-        st.caption("Créez des modèles de mail réutilisables. Variables disponibles : `{numero_devis}`, `{client_nom}`, `{client_adresse}`, `{total_ht}`, `{total_ttc}`, `{company_name}`")
+        
+        # --- Variable Helper Chips (copy to clipboard on click) ---
+        VARIABLES_HELP = [
+            ("{numero_devis}", "N° du devis extrait du PDF"),
+            ("{client_nom}", "Nom du client extrait du PDF"),
+            ("{client_adresse}", "Adresse du client extraite du PDF"),
+            ("{date_devis}", "Date du devis extraite du PDF"),
+            ("{total_ht}", "Montant HT extrait du PDF"),
+            ("{total_ttc}", "Montant TTC extrait du PDF"),
+            ("{company_name}", "Nom de votre société (template visuel)"),
+        ]
+        
+        def render_variable_chips():
+            """Render clickable chips that copy the variable to clipboard."""
+            chips_html = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 12px 0;">'
+            for var, tooltip in VARIABLES_HELP:
+                chips_html += (
+                    f'<span onclick="navigator.clipboard.writeText(\'{var}\').then(()=>{{this.style.background=\'#28a745\';this.innerText=\'✓ Copié !\';setTimeout(()=>{{this.style.background=\'#e8f0fe\';this.innerText=\'{var}\'}},1200)}})" '
+                    f'title="{tooltip}" '
+                    f'style="display:inline-block;padding:4px 10px;background:#e8f0fe;color:#1a73e8;border-radius:16px;font-size:12px;font-family:monospace;cursor:pointer;border:1px solid #c4d7f5;transition:all 0.2s;">'
+                    f'{var}</span>'
+                )
+            chips_html += '</div>'
+            chips_html += '<p style="font-size:11px;color:#888;margin-top:0;">💡 Cliquez sur une variable pour la copier, puis collez-la dans l\'objet ou le corps du mail.</p>'
+            return chips_html
+
+        st.markdown(render_variable_chips(), unsafe_allow_html=True)
 
         email_templates = db.get_email_templates()
         if email_templates:
@@ -1042,6 +1068,8 @@ def main():
                         st.caption(f"Objet : {et['subject']}")
                     with et_c2:
                         with st.popover("📝 Éditer"):
+                            st.markdown("**Variables disponibles :**")
+                            st.markdown(render_variable_chips(), unsafe_allow_html=True)
                             with st.form(f"edit_email_{et['id']}"):
                                 et_name = st.text_input("Nom", value=et['name'])
                                 et_subject = st.text_input("Objet", value=et['subject'])
@@ -1059,6 +1087,8 @@ def main():
             st.info("Aucun template d'email. Créez-en un ci-dessous.")
 
         with st.expander("➕ Ajouter un template d'email", expanded=False):
+            st.markdown("**Variables disponibles :**")
+            st.markdown(render_variable_chips(), unsafe_allow_html=True)
             with st.form("new_email_template"):
                 net_name = st.text_input("Nom du template (ex: Email classique)")
                 net_subject = st.text_input("Objet", placeholder="Estimation {numero_devis} - {client_nom}")
@@ -1250,6 +1280,7 @@ def main():
                 
                 tpl_vars = {
                     "numero_devis": preview_data.get('numero_devis', ''),
+                    "date_devis": preview_data.get('date_emission', ''),
                     "client_nom": preview_data.get('client', {}).get('nom', ''),
                     "client_adresse": preview_data.get('client', {}).get('adresse', ''),
                     "total_ht": f"{preview_data.get('total_ht', 0):,.2f}".replace(',', ' ').replace('.', ','),
