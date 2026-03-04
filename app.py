@@ -206,6 +206,12 @@ def generate_pdf(data, config):
             
     pdf.set_text_color(0) # Reset black
     
+    # NOUVEAU: Affichage du Nom du Projet juste au-dessus du tableau
+    if data.get('nom_projet'):
+        pdf.set_xy(10, 66)
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(90, 5, data['nom_projet'], ln=False)
+    
     pdf.set_y(85) # Ensure start Y (below header line 75 + 8 height + margin)
     
     # Pre-calc Tints
@@ -475,6 +481,7 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
         "numero_devis": "INCONNU",
         "date_emission": "Non trouvée",
         "client": {"nom": "", "adresse": ""},
+        "nom_projet": "",
         "content": [],
         "total_ht": 0.0,
         "tva": 0.0,
@@ -634,6 +641,14 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                     continue
                 
                 # --- STRUCTURE (Body Y >= 260) ---
+                
+                # NOUVEAU: Détection du Nom du Projet
+                # Condition: Sur la page 1, avant d'avoir des items, avec x_start à gauche, 
+                # et qui ne ressemble pas à un numéro d'item ni un prix.
+                if page_idx == 0 and not content_nodes and not data.get('nom_projet'):
+                    if x_start < 150 and not re_total_end.search(text_line) and not re.match(r"^(\d+(?:\.\d+)*)\s+.*", text_line):
+                        data['nom_projet'] = text_line
+                        continue
                 
                 # ... (Reste du parsing Items) ...
                 
