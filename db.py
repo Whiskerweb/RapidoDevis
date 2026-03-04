@@ -90,3 +90,60 @@ def upload_logo(file_obj, file_name):
     except Exception as e:
         st.error(f"Erreur Upload: {e}")
         return None
+
+
+# ================================================================
+# EMAIL TEMPLATES CRUD
+# ================================================================
+
+def get_email_templates():
+    """Fetch all email templates ordered by creation date."""
+    supabase = init_supabase()
+    try:
+        response = supabase.table("email_templates").select("*").order("created_at", desc=True).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Supabase (email_templates): {e}")
+        return []
+
+def create_email_template(name, subject, body):
+    """Insert a new email template."""
+    supabase = init_supabase()
+    data = {"name": name, "subject": subject, "body": body}
+    try:
+        response = supabase.table("email_templates").insert(data).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Création email template: {e}")
+        return None
+
+def update_email_template(template_id, name, subject, body):
+    """Update an existing email template."""
+    supabase = init_supabase()
+    data = {"name": name, "subject": subject, "body": body}
+    try:
+        response = supabase.table("email_templates").update(data).eq("id", template_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Mise à jour email template: {e}")
+        return None
+
+def delete_email_template(template_id):
+    """Delete an email template by ID."""
+    supabase = init_supabase()
+    try:
+        response = supabase.table("email_templates").delete().eq("id", template_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Suppression email template: {e}")
+        return None
+
+def update_template_emails(template_id, emails):
+    """Update the emails list on a visual template."""
+    supabase = init_supabase()
+    try:
+        response = supabase.table("templates").update({"emails": emails}).eq("id", template_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Erreur Mise à jour emails: {e}")
+        return None

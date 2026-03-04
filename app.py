@@ -6,6 +6,7 @@ import json
 import re 
 import pdfplumber
 import db # Supabase Module
+import email_sender
 
 
 # --- Moteur de Template (FPDF) ---
@@ -964,6 +965,8 @@ def main():
                                     e_addr = st.text_area("Adresse", value=t['company_address'])
                                     e_col = st.color_picker("Couleur", value=t['primary_color'])
                                     e_logo = st.file_uploader("Modifier Logo (optionnel)", type=['png', 'jpg'], key=f"logo_edit_{t['id']}")
+                                    existing_emails = ", ".join(t.get('emails', []) or [])
+                                    e_emails = st.text_input("Emails (séparés par des virgules)", value=existing_emails, key=f"emails_edit_{t['id']}")
                                     
                                     if st.form_submit_button("Sauvegarder Changes"):
                                         logo_url = t['logo_url']
@@ -971,6 +974,9 @@ def main():
                                             logo_url = db.upload_logo(e_logo, e_logo.name)
                                         
                                         if db.update_template(t['id'], e_name, e_comp, e_addr, e_col, logo_url):
+                                            # Update emails separately
+                                            emails_list = [e.strip() for e in e_emails.split(',') if e.strip()] if e_emails else []
+                                            db.update_template_emails(t['id'], emails_list)
                                             st.success("Mis à jour !")
                                             st.rerun()
                         
@@ -997,6 +1003,7 @@ def main():
                 with c2:
                     t_color = st.color_picker("Couleur", "#0056b3")
                     t_logo = st.file_uploader("Logo", type=['png', 'jpg'])
+                    t_emails = st.text_input("Emails (séparés par des virgules)", placeholder="commercial@entreprise.com, contact@entreprise.com")
                 
                 if st.form_submit_button("Enregistrer"):
                     if not t_name:
@@ -1006,8 +1013,66 @@ def main():
                         if t_logo:
                             logo_url = db.upload_logo(t_logo, t_logo.name)
                         
-                        if db.create_template(t_name, t_comp_name, t_address_in, t_color, logo_url):
+                        result = db.create_template(t_name, t_comp_name, t_address_in, t_color, logo_url)
+                        if result:
+                            # Save emails on the newly created template
+                            if t_emails:
+                                emails_list = [e.strip() for e in t_emails.split(',') if e.strip()]
+                                new_id = result[0]['id'] if result else None
+                                if new_id:
+                                    db.update_template_emails(new_id, emails_list)
                             st.success("Template créé !")
+                            st.rerun()
+
+        st.divider()
+
+        # =========================================================
+        # EMAIL TEMPLATE MANAGEMENT
+        # =========================================================
+        st.subheader("📧 Templates d'Email")
+        st.caption("Créez des modèles de mail réutilisables. Variables disponibles : `{numero_devis}`, `{client_nom}`, `{client_adresse}`, `{total_ht}`, `{total_ttc}`, `{company_name}`")
+
+        email_templates = db.get_email_templates()
+        if email_templates:
+            for et in email_templates:
+                with st.container(border=True):
+                    et_c1, et_c2, et_c3 = st.columns([3, 1, 1])
+                    with et_c1:
+                        st.markdown(f"**{et['name']}**")
+                        st.caption(f"Objet : {et['subject']}")
+                    with et_c2:
+                        with st.popover("📝 Éditer"):
+                            with st.form(f"edit_email_{et['id']}"):
+                                et_name = st.text_input("Nom", value=et['name'])
+                                et_subject = st.text_input("Objet", value=et['subject'])
+                                et_body = st.text_area("Corps du mail", value=et['body'], height=200)
+                                if st.form_submit_button("Sauvegarder"):
+                                    if db.update_email_template(et['id'], et_name, et_subject, et_body):
+                                        st.success("Template email mis à jour !")
+                                        st.rerun()
+                    with et_c3:
+                        if st.button("🗑️", key=f"del_et_{et['id']}", use_container_width=True):
+                            if db.delete_email_template(et['id']):
+                                st.toast(f"Template email '{et['name']}' supprimé")
+                                st.rerun()
+        else:
+            st.info("Aucun template d'email. Créez-en un ci-dessous.")
+
+        with st.expander("➕ Ajouter un template d'email", expanded=False):
+            with st.form("new_email_template"):
+                net_name = st.text_input("Nom du template (ex: Email classique)")
+                net_subject = st.text_input("Objet", placeholder="Estimation {numero_devis} - {client_nom}")
+                net_body = st.text_area(
+                    "Corps du mail",
+                    placeholder="Bonjour {client_nom},\n\nVeuillez trouver ci-joint l'estimation {numero_devis} d'un montant de {total_ttc} € TTC.\n\nCordialement,\n{company_name}",
+                    height=200
+                )
+                if st.form_submit_button("Créer le template email"):
+                    if not net_name or not net_subject:
+                        st.error("Le nom et l'objet sont obligatoires.")
+                    else:
+                        if db.create_email_template(net_name, net_subject, net_body):
+                            st.success("Template email créé !")
                             st.rerun()
 
     # =========================================================
@@ -1099,36 +1164,127 @@ def main():
             default_filename = f"Estimation_{data.get('numero_devis', 'Inconnu')}"
             export_name = st.text_input("Nom du fichier (sans .pdf)", value=default_filename)
             
-            # GENERATION PDF
-            if st.button("Générer le PDF Final 📄", type="primary"):
+            # --- ACTION BUTTONS: Side by side ---
+            btn_col1, btn_col2 = st.columns(2)
+            
+            with btn_col1:
+                # GENERATION PDF
+                if st.button("📄 Générer le PDF", type="primary", use_container_width=True):
+                    try:
+                        final_data = json.loads(json_edited)
+                        config = {
+                            "color": template['primary_color'],
+                            "logo_path": template['logo_url'],
+                            "company_name": template['company_name'],
+                            "company_address": template['company_address'],
+                            "show_branding": show_br
+                        }
+                        final_pdf_bytes = generate_pdf(final_data, config)
+                        st.session_state['generated_pdf'] = final_pdf_bytes
+                        st.session_state['generated_pdf_name'] = f"{export_name}.pdf"
+                        st.rerun()
+                    except json.JSONDecodeError:
+                        st.error("Erreur de format JSON")
+                    except Exception as e:
+                        st.error(f"Erreur de génération PDF : {e}")
+            
+            with btn_col2:
+                # SEND BY EMAIL BUTTON
+                if st.button("📧 Envoyer par Mail", use_container_width=True):
+                    # Generate PDF first if not already done
+                    try:
+                        final_data = json.loads(json_edited)
+                        config = {
+                            "color": template['primary_color'],
+                            "logo_path": template['logo_url'],
+                            "company_name": template['company_name'],
+                            "company_address": template['company_address'],
+                            "show_branding": show_br
+                        }
+                        final_pdf_bytes = generate_pdf(final_data, config)
+                        st.session_state['generated_pdf'] = final_pdf_bytes
+                        st.session_state['generated_pdf_name'] = f"{export_name}.pdf"
+                        st.session_state['show_email_form'] = True
+                        st.rerun()
+                    except json.JSONDecodeError:
+                        st.error("Erreur de format JSON")
+                    except Exception as e:
+                        st.error(f"Erreur de génération PDF : {e}")
+            
+            # --- DOWNLOAD BUTTON (appears after PDF generation) ---
+            if st.session_state.get('generated_pdf'):
+                st.download_button(
+                    label="⬇️ TÉLÉCHARGER L'ESTIMATION",
+                    data=st.session_state['generated_pdf'],
+                    file_name=st.session_state.get('generated_pdf_name', f"{export_name}.pdf"),
+                    mime="application/pdf",
+                    type="primary"
+                )
+        
+        # =========================================================
+        # EMAIL SECTION (below the two columns)
+        # =========================================================
+        if st.session_state.get('show_email_form') and st.session_state.get('generated_pdf'):
+            st.divider()
+            st.subheader("📧 Envoyer l'estimation par email")
+            
+            email_templates = db.get_email_templates()
+            if not email_templates:
+                st.warning("Aucun template d'email configuré. Créez-en un depuis le Dashboard.")
+            else:
+                # Template selection
+                et_names = [et['name'] for et in email_templates]
+                selected_et_name = st.selectbox("Choisir un template d'email", et_names)
+                selected_et = next(et for et in email_templates if et['name'] == selected_et_name)
+                
+                # Recipient email
+                template_emails = template.get('emails', []) or []
+                default_to = template_emails[0] if template_emails else ""
+                to_email = st.text_input("Email du destinataire", value=default_to, placeholder="client@email.com")
+                
+                # Build template variables
                 try:
-                    # Parse JSON edited
-                    final_data = json.loads(json_edited)
-                    
-                    # Config object for PDF
-                    config = {
-                        "color": template['primary_color'],
-                        "logo_path": template['logo_url'],
-                        "company_name": template['company_name'],
-                        "company_address": template['company_address'],
-                        "show_branding": show_br
-                    }
-                    
-                    final_pdf_bytes = generate_pdf(final_data, config)
-                    
+                    preview_data = json.loads(json_edited)
+                except:
+                    preview_data = data
+                
+                tpl_vars = {
+                    "numero_devis": preview_data.get('numero_devis', ''),
+                    "client_nom": preview_data.get('client', {}).get('nom', ''),
+                    "client_adresse": preview_data.get('client', {}).get('adresse', ''),
+                    "total_ht": f"{preview_data.get('total_ht', 0):,.2f}".replace(',', ' ').replace('.', ','),
+                    "total_ttc": f"{preview_data.get('total_ttc', 0):,.2f}".replace(',', ' ').replace('.', ','),
+                    "company_name": template.get('company_name', ''),
+                }
+                
+                # Render subject & body with variables
+                rendered_subject = email_sender.render_template(selected_et['subject'], tpl_vars)
+                rendered_body = email_sender.render_template(selected_et['body'], tpl_vars)
+                
+                # Preview
+                st.text_input("Objet (aperçu)", value=rendered_subject, disabled=True)
+                st.text_area("Corps du mail (aperçu)", value=rendered_body, height=200, disabled=True)
+                
+                # --- ACTION: Download PDF + Open mailto ---
+                st.info("💡 Cliquez ci-dessous pour **télécharger le PDF** puis **ouvrir votre messagerie** avec le mail pré-rempli. Il ne vous restera qu'à joindre le PDF !")
+                
+                mail_col1, mail_col2 = st.columns(2)
+                
+                with mail_col1:
                     st.download_button(
-                        label="⬇️ TÉLÉCHARGER L'ESTIMATION",
-                        data=final_pdf_bytes,
-                        file_name=f"{export_name}.pdf",
+                        label="📎 1. Télécharger le PDF",
+                        data=st.session_state['generated_pdf'],
+                        file_name=st.session_state.get('generated_pdf_name', 'estimation.pdf'),
                         mime="application/pdf",
-                        type="primary"
+                        use_container_width=True
                     )
-                    st.balloons()
-                    
-                except json.JSONDecodeError:
-                    st.error("Erreur de format JSON")
-                except Exception as e:
-                    st.error(f"Erreur de génération PDF : {e}")
+                
+                with mail_col2:
+                    mailto_link = email_sender.build_mailto_link(to_email, rendered_subject, rendered_body)
+                    st.markdown(
+                        f'<a href="{mailto_link}" target="_blank" style="display:inline-block;width:100%;text-align:center;padding:0.6rem 1rem;background-color:#0068c9;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px;">✉️ 2. Ouvrir ma messagerie</a>',
+                        unsafe_allow_html=True
+                    )
 
 if __name__ == "__main__":
     main()
