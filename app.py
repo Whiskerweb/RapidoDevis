@@ -598,6 +598,14 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                 
                 x_start = line_words[0]['x0']
                 
+                # --- PROJECT NAME (Page 1) ---
+                if page_idx == 0 and not content_nodes and not data.get('nom_projet'):
+                    # Usually between y=230 and y=300, on the left
+                    if 230 < y < 300 and x_start < 150 and not re_total_end.search(text_line) and not re.match(r"^(\d+(?:\.\d+)*)\s+.*", text_line):
+                        if "DÉSIGNATION" not in text_line and "TOTAL" not in text_line and "QTÉ" not in text_line:
+                            data['nom_projet'] = text_line
+                            continue
+                
                 # --- METADATA (Header detection) ---
                 # On ne cherche des métadonnées (Numéro, Client) QUE si on est dans la zone header
                 if y < header_threshold:
@@ -641,14 +649,6 @@ def extract_data_from_pdf(uploaded_file, api_key=None):
                     continue
                 
                 # --- STRUCTURE (Body Y >= 260) ---
-                
-                # NOUVEAU: Détection du Nom du Projet
-                # Condition: Sur la page 1, avant d'avoir des items, avec x_start à gauche, 
-                # et qui ne ressemble pas à un numéro d'item ni un prix.
-                if page_idx == 0 and not content_nodes and not data.get('nom_projet'):
-                    if x_start < 150 and not re_total_end.search(text_line) and not re.match(r"^(\d+(?:\.\d+)*)\s+.*", text_line):
-                        data['nom_projet'] = text_line
-                        continue
                 
                 # ... (Reste du parsing Items) ...
                 
